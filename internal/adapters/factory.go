@@ -13,13 +13,15 @@ import (
 )
 
 func New(i core.Instance, p security.Policy) (core.Collector, error) {
+	p = p.ForEndpoints(i.APIEndpoint, i.ControlEndpoint)
 	if e := security.ValidateEndpoint(i.APIEndpoint, i.CoreType == "hysteria2"); e != nil {
 		return nil, e
 	}
 	if i.CoreType == "hysteria2" {
 		return &hysteria2.Adapter{Instance: i, Client: p.HTTP()}, nil
 	}
-	conn, e := grpc.NewClient(i.APIEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(p.Dial))
+	// Keep the original hostname for our dialer's authorization and pinned DNS resolution.
+	conn, e := grpc.NewClient("passthrough:///"+i.APIEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(p.Dial))
 	if e != nil {
 		return nil, fmt.Errorf("invalid gRPC target")
 	}
@@ -35,7 +37,7 @@ func New(i core.Instance, p security.Policy) (core.Collector, error) {
 				conn.Close()
 				return nil, e
 			}
-			control, e = grpc.NewClient(i.ControlEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(p.Dial))
+			control, e = grpc.NewClient("passthrough:///"+i.ControlEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(p.Dial))
 			if e != nil {
 				conn.Close()
 				return nil, fmt.Errorf("invalid control target")

@@ -65,7 +65,18 @@ func (s *Scheduler) Collect(ctx context.Context, id int64) error {
 	if !inst.Enabled {
 		return fmt.Errorf("instance disabled")
 	}
-	a, e := adapters.New(*inst, security.Policy{Allowed: s.Config.AllowedTargets})
+	if !inst.ServerEnabled {
+		return fmt.Errorf("服务器已停用，所属实例暂停采集")
+	}
+	policy := (security.Policy{Allowed: s.Config.AllowedTargets}).ForEndpoints(inst.APIEndpoint, inst.ControlEndpoint)
+	for _, endpoint := range []string{inst.APIEndpoint, inst.ControlEndpoint} {
+		if endpoint != "" {
+			if e := policy.Check(ctx, security.TargetAddress(endpoint)); e != nil {
+				return s.recordError(ctx, id, e)
+			}
+		}
+	}
+	a, e := adapters.New(*inst, policy)
 	if e != nil {
 		return s.recordError(ctx, id, e)
 	}
@@ -126,7 +137,7 @@ func (s *Scheduler) Run() {
 			return
 		}
 		for _, i := range list {
-			if i.Enabled {
+			if i.Enabled && i.ServerEnabled {
 				go func(id int64) { _ = s.Collect(s.ctx, id) }(i.ID)
 			}
 		}

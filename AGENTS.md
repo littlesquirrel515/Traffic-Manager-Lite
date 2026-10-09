@@ -25,3 +25,5 @@ Xray/V2Fly 使用各自官方 StatsService protobuf；sing-box 只使用实际�
 验证命令：go test ./...；go vet ./...；TML_TEST_SINGBOX=/path/sing-box TML_TEST_MIHOMO=/path/mihomo go test -v ./internal/subscription -run TestRealClientConfigurationValidation；TML_PLAYWRIGHT_MODULE=/path/playwright node scripts/e2e.cjs。浏览器测试仅使用临时数据库与 fixture API。
 
 剩余验收：真实 VPS API/Secret/配置/Nginx、多协议实际连通、资源长期监测。复杂 XHTTP/AnyTLS分享 URI/obfs/ECH/插件等未验证组合保守过滤，不能输出虚构可用配置。配置中的 HY HTTP/command 认证需管理员实际身份/凭据才能扩展发现。准确状态见 docs/verification.md。禁止把夹具流量宣称为生产真实数据。
+
+版本 v1.2：TML_ALLOWED_TARGETS 空/未设置时，只授权当前已保存实例的 API/原生 API 主机和端口；非空保留严格白名单。禁止退化成任意目标放行。DNS 每次实际拨号验证，禁止 link-local/metadata/unspecified/multicast。服务器 CRUD 删除有实例时返回409；停用暂停新采集，历史保留。实例迁移归属会改变服务器维度历史归属。

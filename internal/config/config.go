@@ -23,7 +23,12 @@ func value(k, d string) string {
 	return d
 }
 func Load() (Config, error) {
-	c := Config{Listen: value("LISTEN", ":8080"), DBPath: value("DB_PATH", "data/traffic.db"), BackupDir: value("BACKUP_DIR", "backups"), AdminUser: value("ADMIN_USER", "admin"), AdminPassword: value("ADMIN_PASSWORD", ""), Timezone: value("TIMEZONE", "Asia/Shanghai"), LogLevel: value("LOG_LEVEL", "info"), ConfigRoot: value("CONFIG_ROOT", "configs"), AllowedTargets: strings.Split(value("ALLOWED_TARGETS", "127.0.0.1,::1"), ",")}
+	c := Config{Listen: value("LISTEN", ":8080"), DBPath: value("DB_PATH", "data/traffic.db"), BackupDir: value("BACKUP_DIR", "backups"), AdminUser: value("ADMIN_USER", "admin"), AdminPassword: value("ADMIN_PASSWORD", ""), Timezone: value("TIMEZONE", "Asia/Shanghai"), LogLevel: value("LOG_LEVEL", "info"), ConfigRoot: value("CONFIG_ROOT", "configs")}
+	for _, target := range strings.Split(os.Getenv("TML_ALLOWED_TARGETS"), ",") {
+		if target = strings.TrimSpace(target); target != "" {
+			c.AllowedTargets = append(c.AllowedTargets, target)
+		}
+	}
 	var err error
 	for k, p := range map[string]*time.Duration{"COLLECT_INTERVAL": &c.Interval, "COLLECT_TIMEOUT": &c.Timeout, "ACTIVE_WINDOW": &c.ActiveWindow} {
 		d := map[string]string{"COLLECT_INTERVAL": "10s", "COLLECT_TIMEOUT": "8s", "ACTIVE_WINDOW": "60s"}[k]

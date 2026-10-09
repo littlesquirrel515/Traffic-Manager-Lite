@@ -15,7 +15,7 @@ func backupPath(p string, t time.Time) string {
 	return filepath.Join(p, "traffic-"+t.UTC().Format("20060102-150405.000000000")+".db")
 }
 func (s *Store) Instances(ctx context.Context) ([]core.Instance, error) {
-	rows, e := s.DB.QueryContext(ctx, "SELECT id,server_id,name,core_type,api_endpoint,api_secret,config_path,version,enabled,last_collected_at,last_error,capabilities_json,control_endpoint,detected_version FROM instances ORDER BY id")
+	rows, e := s.DB.QueryContext(ctx, "SELECT id,server_id,name,core_type,api_endpoint,api_secret,config_path,version,enabled,last_collected_at,last_error,capabilities_json,control_endpoint,detected_version,(SELECT enabled FROM servers WHERE id=instances.server_id) FROM instances ORDER BY id")
 	if e != nil {
 		return nil, e
 	}
@@ -24,7 +24,7 @@ func (s *Store) Instances(ctx context.Context) ([]core.Instance, error) {
 	for rows.Next() {
 		var i core.Instance
 		var cap string
-		e = rows.Scan(&i.ID, &i.ServerID, &i.Name, &i.CoreType, &i.APIEndpoint, &i.APISecret, &i.ConfigPath, &i.Version, &i.Enabled, &i.LastCollectedAt, &i.LastError, &cap, &i.ControlEndpoint, &i.DetectedVersion)
+		e = rows.Scan(&i.ID, &i.ServerID, &i.Name, &i.CoreType, &i.APIEndpoint, &i.APISecret, &i.ConfigPath, &i.Version, &i.Enabled, &i.LastCollectedAt, &i.LastError, &cap, &i.ControlEndpoint, &i.DetectedVersion, &i.ServerEnabled)
 		if e != nil {
 			return nil, e
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 	"traffic-manager-lite/internal/collector"
 	"traffic-manager-lite/internal/config"
@@ -43,9 +44,13 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("GET /api/v1/dashboard", a.dashboard)
 	admin.HandleFunc("GET /api/v1/servers", func(w http.ResponseWriter, r *http.Request) { a.rows(w, r, "SELECT * FROM servers ORDER BY id") })
 	admin.HandleFunc("POST /api/v1/servers", a.saveServer)
+	admin.HandleFunc("GET /api/v1/servers/{id}", a.getServer)
+	admin.HandleFunc("PATCH /api/v1/servers/{id}", a.updateServer)
+	admin.HandleFunc("DELETE /api/v1/servers/{id}", a.deleteServer)
 	admin.HandleFunc("GET /api/v1/instances", func(w http.ResponseWriter, r *http.Request) { v, e := a.Store.Instances(r.Context()); result(w, v, e) })
 	admin.HandleFunc("POST /api/v1/instances", a.saveInstance)
 	admin.HandleFunc("PATCH /api/v1/instances/{id}", a.saveInstance)
+	admin.HandleFunc("POST /api/v1/instances/{id}/test", a.testInstance)
 	admin.HandleFunc("POST /api/v1/instances/{id}/collect", func(w http.ResponseWriter, r *http.Request) {
 		id, e := pathID(r)
 		if e == nil {
@@ -107,7 +112,11 @@ func (a *API) Handler() http.Handler {
 		result(w, map[string]string{"backup": p}, e)
 	})
 	admin.HandleFunc("GET /api/v1/settings", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 200, map[string]any{"collect_interval": a.Config.Interval.String(), "active_window": a.Config.ActiveWindow.String(), "timezone": a.Config.Timezone, "raw_retention_days": 30, "archive_enabled": a.Config.Archive, "log_level": a.Config.LogLevel, "configuration": "环境变量修改后重启管理服务生效；聚合时区固定"})
+		mode := "instance"
+		if len(a.Config.AllowedTargets) > 0 {
+			mode = "restricted"
+		}
+		respond(w, 200, map[string]any{"collect_interval": a.Config.Interval.String(), "active_window": a.Config.ActiveWindow.String(), "timezone": a.Config.Timezone, "raw_retention_days": 30, "archive_enabled": a.Config.Archive, "log_level": a.Config.LogLevel, "target_policy": mode, "allowed_targets": a.Config.AllowedTargets, "configuration": "默认授权后台保存的实例地址；非空 TML_ALLOWED_TARGETS 启用严格限制。环境变量修改后重启管理服务生效；聚合时区固定"})
 	})
 	admin.HandleFunc("PATCH /api/v1/settings", a.settings)
 	mux.Handle("/api/v1/", a.Auth.Protect(admin))
@@ -176,6 +185,8 @@ func (a *API) saveServer(w http.ResponseWriter, r *http.Request) {
 	if !body(w, r, &d) {
 		return
 	}
+	d.Name = strings.TrimSpace(d.Name)
+	d.Address = strings.TrimSpace(d.Address)
 	if len(d.Name) < 1 || len(d.Name) > 200 || len(d.Address) > 253 {
 		result(w, nil, fmt.Errorf("invalid server"))
 		return
@@ -225,6 +236,19 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 		if e := security.ValidateEndpoint(d.ControlEndpoint, false); e != nil {
 			result(w, nil, e)
 			return
+		}
+	}
+	if len(a.Config.AllowedTargets) > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		policy := security.Policy{Allowed: a.Config.AllowedTargets}
+		for _, endpoint := range []string{d.APIEndpoint, d.ControlEndpoint} {
+			if endpoint != "" {
+				if e := policy.Check(ctx, security.TargetAddress(endpoint)); e != nil {
+					result(w, nil, e)
+					return
+				}
+			}
 		}
 	}
 	now := storage.Stamp(time.Now())

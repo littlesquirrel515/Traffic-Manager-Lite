@@ -48,6 +48,7 @@ type Instance struct {
 	ConfigPath      string       `json:"config_path"`
 	Version         string       `json:"version"`
 	Enabled         bool         `json:"enabled"`
+	ServerEnabled   bool         `json:"server_enabled"`
 	LastCollectedAt *string      `json:"last_collected_at"`
 	LastError       string       `json:"last_error"`
 	Capabilities    []Capability `json:"capabilities"`

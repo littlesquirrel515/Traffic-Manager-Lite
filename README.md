@@ -4,6 +4,24 @@
 
 已实现采集、持久统计、30 天归档、配置发现、人工覆盖、三种订阅、后台登录与管理。**尚未接入你的真实 VPS 或生产核心；本地测试通过不等于生产流量或连通性验收。** 具体记录见 [验证报告](docs/verification.md)。
 
+## v1.2 更新与升级
+
+- 默认由后台管理员保存的实例 API 地址授权，支持任意核心容器名称，无需逐个维护环境变量。
+- `TML_ALLOWED_TARGETS` 留空或未设置为实例授权模式；非空为严格模式，旧配置继续生效。核心类型仅选择采集适配器，不代替地址授权。
+- 默认授权精确到当前实例主机和端口；每次实际拨号重新检查 DNS/IP，不跟随 HTTP 重定向，不使用环境代理。仅添加地址不会保证服务可达，保存后点击“检测 API”验证真实统计 API，不写入基线或流量；点击“采集”才进入统计流程。
+- 服务器支持新增、列表/详情、编辑、删除。停用服务器暂停所属实例的新采集（已进行中的采集可能完成），历史数据保留。删除有关联实例的服务器返回 409；先编辑实例迁移归属。归属迁移后，服务器维度历史统计也随实例归属变化。
+- 服务器地址仅为 VPS 展示标识，不用于 API 连接或订阅节点地址。实例地址独立填写，如 `xray-multi:10085`。
+- 严格模式保存实例时提前验证目标；采集时明确报告白名单或 DNS 错误，避免统一显示 gRPC Unavailable。
+
+已有部署升级：在外层 `.env` 将 `TML_ALLOWED_TARGETS=` 留空以启用新模式，再在外层目录执行：
+
+```bash
+docker compose build traffic-manager-lite
+docker compose up -d --no-deps traffic-manager-lite
+```
+
+本次无需新增数据库迁移。保留非空白名单则继续严格模式；无需重启代理核心。
+
 ## 快速部署
 
 部署目录遵循固定布局：
@@ -31,7 +49,7 @@ chmod 600 .env
 chown -R 10001:10001 data backups
 ```
 
-编辑外层 `.env`：设置随机 `TML_ADMIN_PASSWORD`（至少 16 个字符，示例占位密码会被拒绝），配置 `TML_ALLOWED_TARGETS` 为真实核心容器名称/IP/CIDR，配置 `TML_CONFIG_HOST_DIR`。确认外部 `my-network` 已存在且代理核心可通过该网络访问。
+编辑外层 `.env`：设置随机 `TML_ADMIN_PASSWORD`（至少 16 个字符，示例占位密码会被拒绝），`TML_ALLOWED_TARGETS` 默认留空，由后台保存的实例地址授权；需要严格模式时填写允许的容器名称/IP/CIDR，配置 `TML_CONFIG_HOST_DIR`。确认外部 `my-network` 已存在且代理核心可通过该网络访问。
 
 ```bash
 docker network inspect my-network
@@ -120,7 +138,7 @@ Token 随机 256 位、数据库仅存 SHA256；创建/轮换返回一次明文�
 
 后台可保存采集间隔、活跃窗口、归档开关和日志级别到 SQLite；重启**本管理服务**后生效，保存设置不会重启代理核心。数据库保存值优先于环境变量。聚合时区和 30 天保留策略固定，不能在后台误改历史边界。
 
-管理 API 使用会话 Cookie + CSRF，自动化运维可使用 HTTP Basic（通过 HTTPS 或本机连接）。订阅 Token 不能用于管理认证。API 目标需在 allowlist；HTTP 不跟随重定向、不使用环境代理，DNS 地址在每次实际拨号时检查。禁止 169.254.169.254 元数据目标。登录限速、Cookie HttpOnly/SameSite、CSP、请求体大小限制。SQLite/备份文件默认权限 0600；数据库含客户端凭据和 API Secret，备份也需保密。
+管理 API 使用会话 Cookie + CSRF，自动化运维可使用 HTTP Basic（通过 HTTPS 或本机连接）。订阅 Token 不能用于管理认证。API 目标默认限定为当前实例由管理员保存的主机和端口；非空 `TML_ALLOWED_TARGETS` 则额外使用部署白名单；HTTP 不跟随重定向、不使用环境代理，DNS 地址在每次实际拨号时检查。禁止未指定、组播、链路本地及已知云元数据地址。登录限速、Cookie HttpOnly/SameSite、CSP、请求体大小限制。SQLite/备份文件默认权限 0600；数据库含客户端凭据和 API Secret，备份也需保密。
 
 ## 更新
 
