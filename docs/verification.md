@@ -1,0 +1,57 @@
+# 验证记录
+
+日期：2026-10-09（Asia/Shanghai）。本记录区别开发验证与生产验收。
+
+## 开发环境
+
+- Windows amd64，项目内 Go 1.27.1；官方下载 SHA256 已核对。
+- Docker CLI/Engine 29.7.2，Docker Desktop 4.90.0（Linux 后端）。初始 stopped，经授权检查/启动后可用。
+- Node.js 20.15.0，Playwright 1.62.1，Chromium 用于开发验证；不进入生产镜像。
+- 官方 sing-box 1.14.0 和 Mihomo 1.19.32 校验程序，均核对官方发布资产 SHA256。
+
+## 已通过
+
+- Windows amd64 编译；Linux amd64 `CGO_ENABLED=0` 交叉编译。
+- `go test ./...`、`go vet ./...`、JS 语法检查。
+- 首次基线、重复/过时采集、负计数器、缺失方向配对、计数器回退、SQLite 重开恢复 cursor。
+- 可获取启动标识时核心重启的 epoch 变更；重启后即使计数更大，也重新建基线。
+- 增量写入失败不推进 cursor，重试不丢已观察增量。
+- 第 30 天边界保留、第 31 天清理、重复归档、清理事务失败/取消回滚。
+- 小时/日汇总损坏及缺失行阻止归档，归档后累计不变。
+- 自然月、跨年、UTC/Asia Shanghai 日边界、跨原始与已归档日期范围、固定聚合时区。
+- 一致性备份重开，恢复统计正确。
+- 用户/inbound 计数分别查询，最新 batch 当前周期查询不重复累计。
+- 仅在线 API 出现的用户同步为身份，不产生虚构流量样本或 cursor。
+- 官方 protobuf gRPC 夹具：Xray、V2Fly、sing-box 的独立服务名、reset=false、在线“不支持”降级。
+- sing-box 原生只读 API 夹具：真实版本字段、GetStartedAt、实例总量、完整初始连接快照、Bearer Secret。
+- Hysteria2 HTTP 夹具：Authorization、/traffic 和 /online、上传下载方向、不清零、错误体不写日志。
+- 同实例互斥、失败/超时实例不阻塞另一实例，超时被持久记录。
+- 配置解析白名单、不输出服务端私钥、稳定节点 ID、保留人工覆盖、配置移除停用。
+- obfs/ECH 等尚不支持的客户端参数明确标记限制，避免生成缺少必要参数的订阅。
+- 同用户节点选择、跨用户事务拒绝、Token 哈希保存/轮换/禁用、公开订阅格式校验。
+- 官方 sing-box `check` 与 Mihomo `-t`：VLESS TCP、WS、Reality、VMess、Trojan/gRPC、Hysteria2、AnyTLS、Shadowsocks。
+- 管理鉴权、CSRF、健康接口脱敏、实例 Secret 不返回、在线过期区别离线、SSRF allowlist 和元数据地址拒绝。
+- 浏览器集成：登录、服务器/实例表单、HTTP 夹具实际采集、配置扫描、覆盖编辑、创建订阅、下载/轮换 Token。
+- 七个页面 × 360/768/1440px 共 21 组布局，无整体横向溢出；手机表单、深色主题，无 JS/控制台错误。
+- Docker Compose 模板解析通过（本地模板验证使用 `--no-env-resolution`；生产 .env 在外层部署目录）。
+- Docker 生产镜像构建通过；Docker Hub auth 连接超时后通过 mirror.gcr.io 获取相同版本的官方缓存镜像。生产默认仍使用 Docker Hub，可通过 GO_IMAGE/RUNTIME_IMAGE/GOPROXY build args 指定受信任镜像源。
+- 隔离 Linux Docker test 构建阶段 `CGO_ENABLED=1 go test -race ./...` 与 `go vet ./...` 通过。
+- 生产容器以 UID 10001、根文件系统只读、cap_drop ALL、no-new-privileges、256 MiB/0.5 CPU 上限运行通过；健康检查、API 鉴权、SQLite 一致性备份、卷数据重启持久化通过。
+- 单次空闲容器观测：CPU 0.00%，内存 5.336 MiB / 256 MiB；这不是带真实核心的长期负载基准。
+- 最终镜像复测：原 Compose 模板外层部署目录、外部网络、非 root 对宿主 data/backups 的 bind-mount、健康及重启数据持久化通过。测试使用随机本机端口，重启后重新读取 Docker 分配端口；测试容器、临时卷和专用网络均已清理。
+
+## 环境受限 / 生产待验证
+
+- Windows 本机缺少 C 编译器，因此 race 改在隔离 Linux 容器执行并通过；远程 CI 尚未运行。
+- 未提供真实 VPS、实际核心 API/Secret、服务器配置和 Nginx；没有变更任何生产服务器或代理配置。
+- 原生 sing-box API 与兼容统计已按 v1.14.0 官方 schema/实现核对，并做 gRPC 夹具验证；你的实际构建是否启用 API、是否为各用户/inbound 注册计数器需在真实实例探测。
+- 客户端 `check/-t` 只证明配置可以解析，不证明网络、证书、认证和路由实际可用；需要真实节点连通测试。
+- AnyTLS v2rayN 分享 URI、XHTTP、obfs、端口跳跃、特殊 Shadowsocks 插件/ECH 等复杂组合未完成端到端支持；已保守过滤或标记限制。
+- Hysteria2 HTTP/command 动态认证不能从静态文件推导客户端凭据。V1 不调用认证后端猜测用户。
+- 核心 API 不报告启动标识且重启后计数仍大于旧值时，无法可靠识别重启；文档明确此可观测性限制。
+
+## 产物
+
+`dist/traffic-manager-lite.exe`（Windows）、`dist/traffic-manager-lite`（Linux amd64）、`dist/ui-verification/`（浏览器截图）。dist 和 .tools 被 Git 忽略。包含夹具数据的截图名称含 `fixture`，不代表生产使用量。
+
+版本依赖由 go.mod/go.sum 固定。所有 generated protobuf 已入源码，生产构建无需 protoc 或完整代理核心 Go 依赖。

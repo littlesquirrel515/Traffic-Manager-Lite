@@ -1,0 +1,43 @@
+services:
+  traffic-manager-lite:
+    build:
+      context: ./traffic-manager-lite
+      dockerfile: Dockerfile
+    image: traffic-manager-lite:latest
+    container_name: traffic-manager-lite
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${TML_HTTP_PORT:-18080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+      - ${TML_CONFIG_HOST_DIR:-./configs}:/app/configs:ro
+    networks:
+      - my-network
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: "0.50"
+    pids_limit: 64
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "/app/traffic-manager-lite", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  my-network:
+    external: true

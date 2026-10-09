@@ -1,0 +1,9 @@
+.env
+.tools/
+data/
+backups/
+logs/
+dist/
+*.db*
+*.exe
+node_modules/

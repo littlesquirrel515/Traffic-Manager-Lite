@@ -1,0 +1,27 @@
+# Traffic Manager Lite
+
+个人代理流量监控系统：Go 单体、net/http、纯 Go SQLite WAL、嵌入中文响应式 Web。
+
+目录：cmd/traffic-manager-lite 入口；internal/config 配置；internal/core 模型；internal/adapters 核心 API；internal/collector 调度；internal/storage 事务与统计；internal/discovery 配置发现；internal/subscription 客户端输出；internal/httpapi 鉴权与 API；web 静态资源；migrations 嵌入式 SQL；deploy 外层部署模板。
+
+构建 `go build ./cmd/traffic-manager-lite`；测试 `go test ./...`；格式化 `gofmt -w cmd internal web migrations`。
+
+部署目录外层 /data/traffic-manager-lite 放 .env、docker-compose.yml、data、backups；内层 traffic-manager-lite 是源码。禁止挂载 Docker Socket。配置只读，不能重启或修改代理核心。
+
+迁移按编号嵌入、事务执行，不修改已执行迁移。采集 cursor、原始增量、小时/日汇总必须同事务。首次建立基线；回退重新建立基线，不能虚构重启期间流量。用户计数和 inbound 计数分别保存，查询不得相加重复统计。统计时区固定写入数据库，不能重新解释已有每日汇总。
+
+Xray/V2Fly 使用各自官方 StatsService protobuf；sing-box 只使用实际可用的兼容 API，不将独立 Hysteria2 API 用于 sing-box；Hysteria2 tx 是客户端下载、rx 是客户端上传。在线指标需区分 device/session/ip/active，不支持与过期必须明确。
+
+配置发现保留人工覆盖和稳定节点 ID；订阅凭据通过统一用户身份映射隔离。白名单客户端参数，不能输出私钥/API Secret。Token 只存 SHA256，返回明文一次。管理认证与订阅分离。所有输入校验、参数化 SQL、限制文件路径和 API 目标地址。
+
+状态（2026-10-09）：Phase 1–5 已实现：基础服务/安全、四核心只读采集、事务增量与持久汇总/归档、配置发现/人工覆盖/订阅、响应式后台。Phase 6：单元/API/集成、官方客户端配置校验、浏览器 21 个页面尺寸、Docker 构建/健康/只读运行/备份/重启持久化、Compose 外层 bind-mount/外部网络、Linux race/vet 检查通过。Go1.27.1、grpc1.84、protobuf1.36.12、SQLite1.60.1、yaml3.0.1。前端原生 HTML/CSS/JS，嵌入，无生产 Node。
+
+重要发现：直接 import Xray/V2Fly 官方 StatsService Go 包会加载两套核心运行时并发生 protobuf 重复文件注册。已从固定官方版本生成 internal/proto 下的隔离文件名 schema；wire 服务/字段不变。sing-box StatsService 实际服务名为 experimental.v2rayapi.StatsService，不能调用 V2Fly 服务名。原生 daemon.StartedService 获取版本、启动时间、实例流量及真实 session 快照，兼容 API 只按实际用户计数声明能力。服务端私钥只用于 X25519 推导公钥，不进入节点 JSON。
+
+归档先验证明细与 hourly/daily ledger/权威汇总双向一致，ledger 更新及明细删除同事务。最新 batch 单独支持当前周期。Xray/V2Fly 可用 uptime 估计核心 epoch 并持久保存；sing-box 使用 GetStartedAt。API 不提供 epoch 的不可观测重启需在文档保持限制。
+
+实例 API Secret 不返回前端，节点客户端认证只有登录管理员能查看。管理用户名/密码由 TML 环境加载，会话密钥每启动随机生成。SQLite runtime 设置优先于环境变量，保存后重启本管理服务生效；聚合时区不可在线变更。实例 core_type 不可就地修改。
+
+验证命令：go test ./...；go vet ./...；TML_TEST_SINGBOX=/path/sing-box TML_TEST_MIHOMO=/path/mihomo go test -v ./internal/subscription -run TestRealClientConfigurationValidation；TML_PLAYWRIGHT_MODULE=/path/playwright node scripts/e2e.cjs。浏览器测试仅使用临时数据库与 fixture API。
+
+剩余验收：真实 VPS API/Secret/配置/Nginx、多协议实际连通、资源长期监测。复杂 XHTTP/AnyTLS分享 URI/obfs/ECH/插件等未验证组合保守过滤，不能输出虚构可用配置。配置中的 HY HTTP/command 认证需管理员实际身份/凭据才能扩展发现。准确状态见 docs/verification.md。禁止把夹具流量宣称为生产真实数据。
