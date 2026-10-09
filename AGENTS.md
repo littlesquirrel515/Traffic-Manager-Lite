@@ -27,3 +27,5 @@ Xray/V2Fly 使用各自官方 StatsService protobuf；sing-box 只使用实际�
 剩余验收：真实 VPS API/Secret/配置/Nginx、多协议实际连通、资源长期监测。复杂 XHTTP/AnyTLS分享 URI/obfs/ECH/插件等未验证组合保守过滤，不能输出虚构可用配置。配置中的 HY HTTP/command 认证需管理员实际身份/凭据才能扩展发现。准确状态见 docs/verification.md。禁止把夹具流量宣称为生产真实数据。
 
 版本 v1.2：TML_ALLOWED_TARGETS 空/未设置时，只授权当前已保存实例的 API/原生 API 主机和端口；非空保留严格白名单。禁止退化成任意目标放行。DNS 每次实际拨号验证，禁止 link-local/metadata/unspecified/multicast。服务器 CRUD 删除有实例时返回409；停用暂停新采集，历史保留。实例迁移归属会改变服务器维度历史归属。
+
+版本 v1.3：Xray 通过 internal/xraymonitor 独立采集运行时 Clients/Stats/Online；资产按 inbound+source 保存，流量按 instance+Email，不得复制到每个 inbound。逐用户 online map 缺项为 Unknown，不从 GetAllOnlineUsers 空列表判 Offline。新增迁移005/006，凭据差异以持久随机密钥HMAC比对且指纹不返回API；诊断只读且不创建身份/统计基线，全部reset=false。版本无证据Unknown；宿主固定命令证据绑定endpoint/config hash、24h有效，无Docker Socket。API诊断/历史和健康分开。每实例资产上限10000、inbound256，在线诊断按方法/结果聚合，历史200条。最新正式版已核实v26.3.27，GetUsersStats不存在；v26.2.6->v26.3.27隔离升级实测。见docs/xray-v1.3.md。

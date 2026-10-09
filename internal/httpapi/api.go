@@ -47,6 +47,12 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("GET /api/v1/servers/{id}", a.getServer)
 	admin.HandleFunc("PATCH /api/v1/servers/{id}", a.updateServer)
 	admin.HandleFunc("DELETE /api/v1/servers/{id}", a.deleteServer)
+	admin.HandleFunc("GET /api/v1/xray/diagnostics", a.diagnosticSummary)
+	admin.HandleFunc("GET /api/v1/instances/{id}/diagnostics", a.diagnosticDetails)
+	admin.HandleFunc("POST /api/v1/instances/{id}/diagnostics", a.diagnose)
+	admin.HandleFunc("GET /api/v1/instances/{id}/diagnostics/history", a.diagnosticHistory)
+	admin.HandleFunc("GET /api/v1/instances/{id}/health", a.collectorHealth)
+	admin.HandleFunc("GET /api/v1/instances/{id}/clients", a.clients)
 	admin.HandleFunc("GET /api/v1/instances", func(w http.ResponseWriter, r *http.Request) { v, e := a.Store.Instances(r.Context()); result(w, v, e) })
 	admin.HandleFunc("POST /api/v1/instances", a.saveInstance)
 	admin.HandleFunc("PATCH /api/v1/instances/{id}", a.saveInstance)
@@ -61,7 +67,7 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("GET /api/v1/traffic/summary", a.traffic)
 	admin.HandleFunc("GET /api/v1/traffic/history", a.traffic)
 	admin.HandleFunc("GET /api/v1/users", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, "SELECT u.*, (SELECT MAX(last_active_at) FROM identities WHERE user_id=u.id) last_active_at FROM users u WHERE display_name LIKE ? ORDER BY display_name", "%"+r.URL.Query().Get("search")+"%")
+		a.rows(w, r, "SELECT u.*, (SELECT MAX(last_active_at) FROM identities WHERE user_id=u.id) last_active_at,(SELECT json_group_array(json_object('instance_id',i.instance_id,'state',st.stats_state,'checked_at',st.checked_at)) FROM identities i JOIN xray_user_states st ON st.instance_id=i.instance_id AND st.email=i.core_user_key WHERE i.user_id=u.id AND i.scope='user') stats_states FROM users u WHERE display_name LIKE ? ORDER BY display_name", "%"+r.URL.Query().Get("search")+"%")
 	})
 	admin.HandleFunc("GET /api/v1/identities", func(w http.ResponseWriter, r *http.Request) {
 		a.rows(w, r, "SELECT i.*,x.name instance_name FROM identities i JOIN instances x ON x.id=i.instance_id WHERE i.scope='user' ORDER BY i.id")
@@ -276,6 +282,9 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 		if e == nil {
 			id, e = res.LastInsertId()
 		}
+	}
+	if e == nil && d.CoreType == "xray" {
+		a.Scheduler.QueueDiagnosis(id, "instance_saved")
 	}
 	result(w, map[string]int64{"id": id}, e)
 }

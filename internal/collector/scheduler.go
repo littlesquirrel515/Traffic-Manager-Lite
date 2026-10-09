@@ -13,6 +13,7 @@ import (
 	"traffic-manager-lite/internal/core"
 	"traffic-manager-lite/internal/security"
 	"traffic-manager-lite/internal/storage"
+	"traffic-manager-lite/internal/xraymonitor"
 )
 
 var ErrBusy = errors.New("此实例正在采集")
@@ -43,8 +44,10 @@ func (s *Scheduler) Collect(ctx context.Context, id int64) error {
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.busy, id); s.mu.Unlock(); s.wg.Done() }()
-	ctx, cancel := context.WithTimeout(ctx, s.Config.Timeout)
-	stop := context.AfterFunc(s.ctx, cancel)
+	requestContext, requestCancel := context.WithCancel(ctx)
+	defer requestCancel()
+	ctx, cancel := context.WithTimeout(requestContext, s.Config.Timeout)
+	stop := context.AfterFunc(s.ctx, requestCancel)
 	defer stop()
 	defer cancel()
 	list, e := s.Store.Instances(ctx)
@@ -67,6 +70,18 @@ func (s *Scheduler) Collect(ctx context.Context, id int64) error {
 	}
 	if !inst.ServerEnabled {
 		return fmt.Errorf("服务器已停用，所属实例暂停采集")
+	}
+	if inst.CoreType == "xray" {
+		report, err := (xraymonitor.Service{Store: s.Store, Config: s.Config}).Observe(requestContext, *inst, false, "collection")
+		if err != nil {
+			return s.recordError(ctx, id, err)
+		}
+		for _, health := range report.Health {
+			if health.Status == "Error" {
+				return fmt.Errorf("%s: %s", health.Collector, health.Summary)
+			}
+		}
+		return nil
 	}
 	policy := (security.Policy{Allowed: s.Config.AllowedTargets}).ForEndpoints(inst.APIEndpoint, inst.ControlEndpoint)
 	for _, endpoint := range []string{inst.APIEndpoint, inst.ControlEndpoint} {

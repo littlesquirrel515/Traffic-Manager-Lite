@@ -13,6 +13,17 @@ jobs:
           cache: true
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Download verified official Xray
+        run: |
+          mkdir -p .tools/xray
+          curl -fsSL --retry 2 https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip -o .tools/xray.zip
+          printf '%s  %s\n' '23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae' '.tools/xray.zip' | sha256sum -c -
+          unzip -q .tools/xray.zip -d .tools/xray
+          chmod +x .tools/xray/xray
+      - name: Real Xray integration
+        run: go test -race -v ./internal/xraymonitor -run TestRealXrayCollectorsAndDiagnostics
+        env:
+          TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
       - run: go build -o dist/traffic-manager-lite ./cmd/traffic-manager-lite
       - uses: actions/setup-node@v4
         with:
@@ -21,6 +32,10 @@ jobs:
       - run: .tools/ui/node_modules/.bin/playwright install --with-deps chromium
       - run: node scripts/e2e.cjs
         env:
+          TML_PLAYWRIGHT_MODULE: ${{ github.workspace }}/.tools/ui/node_modules/playwright
+      - run: node scripts/xray-e2e.cjs
+        env:
+          TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
           TML_PLAYWRIGHT_MODULE: ${{ github.workspace }}/.tools/ui/node_modules/playwright
       - run: docker build -t traffic-manager-lite:ci .
       - name: Container health smoke test

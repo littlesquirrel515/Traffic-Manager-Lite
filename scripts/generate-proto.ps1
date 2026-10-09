@@ -17,6 +17,6 @@ foreach($entry in @(@('xray','github.com/xtls/xray-core@v1.260327.0'),@('v2fly',
 }
 Push-Location $repositoryRoot
 try {
-    & '.tools/protoc/bin/protoc.exe' '--proto_path=.' '--proto_path=.tools/protoc/include' '--plugin=protoc-gen-go=.tools/bin/protoc-gen-go.exe' '--plugin=protoc-gen-go-grpc=.tools/bin/protoc-gen-go-grpc.exe' '--go_out=.' '--go_opt=paths=source_relative' '--go-grpc_out=.' '--go-grpc_opt=paths=source_relative' 'internal/proto/xray/xray.proto' 'internal/proto/v2fly/v2fly.proto' 'internal/proto/singbox/singbox.proto' 'internal/proto/singboxnative/native.proto'
+    & '.tools/protoc/bin/protoc.exe' '--proto_path=.' '--proto_path=.tools/protoc/include' '--plugin=protoc-gen-go=.tools/bin/protoc-gen-go.exe' '--plugin=protoc-gen-go-grpc=.tools/bin/protoc-gen-go-grpc.exe' '--go_out=.' '--go_opt=paths=source_relative' '--go-grpc_out=.' '--go-grpc_opt=paths=source_relative' 'internal/proto/xrayhandler/handler.proto' 'internal/proto/xray/xray.proto' 'internal/proto/v2fly/v2fly.proto' 'internal/proto/singbox/singbox.proto' 'internal/proto/singboxnative/native.proto'
     if($LASTEXITCODE -ne 0){throw 'protoc failed'}
 } finally {Pop-Location}

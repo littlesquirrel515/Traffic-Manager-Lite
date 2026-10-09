@@ -21,7 +21,7 @@ func TestServersCRUDPreservesLinkedInstances(t *testing.T) {
 	if r := call(t, h, "GET", "/api/v1/servers/1", nil, true); r.Code != 200 || !strings.Contains(r.Body.String(), "Updated") || !strings.Contains(r.Body.String(), "example.com") {
 		t.Fatal(r.Body.String())
 	}
-	if r := call(t, h, "POST", "/api/v1/instances", map[string]any{"name": "xray1", "server_id": 1, "core_type": "xray", "api_endpoint": "xray1:10085", "enabled": true}, true); r.Code != 200 {
+	if r := call(t, h, "POST", "/api/v1/instances", map[string]any{"name": "core1", "server_id": 1, "core_type": "v2fly", "api_endpoint": "core1:10085", "enabled": true}, true); r.Code != 200 {
 		t.Fatal(r.Body.String())
 	}
 	if r := call(t, h, "DELETE", "/api/v1/servers/1", nil, true); r.Code != 409 {
