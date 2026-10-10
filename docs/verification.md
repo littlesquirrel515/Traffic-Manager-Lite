@@ -2,6 +2,26 @@
 
 日期：2026-10-10（Asia/Shanghai）。本记录区别开发验证与生产验收。
 
+## v1.4 Hysteria2 纠偏、sing-box 原生集成与配置管理
+
+**本节替代旧版本的 Hysteria2 方向结论。旧夹具不足以证明官方方向。** 官方 2.13.0 TrafficLogger 明确 server–remote 语义，真实代理流量确认 Upload=tx、Download=rx。旧实现映射反转已在两条采集路径纠正。
+
+- Windows 最终全量 `go test ./...`、`go vet ./...` 通过；启用官方 Xray/Hysteria2/sing-box/V2Fly 实际二进制集成。Linux 隔离 Alpine 容器四核心 `go test -race ./...`、`go vet ./...` 通过；最后来源/方向证据变化另复测 coremonitor/storage race，通过。Windows/Linux 主程序、宿主代理、审计 CLI 已构建。
+- Hysteria2 官方服务端+客户端：独立用户 4 MiB 下载/上传，Go 测试比较原始 tx/rx、标准化及日统计；浏览器再次校验实际官方流量、原始 API、数据库汇总、客户端视角和来源展示，全通过。`dist/ui-verification/hysteria-direction-real.json` 保存本次测量，截图 `hysteria-real-upload-download.png`。HTTP 完成与服务器计数器更新异步，测试等待稳定快照，未降低原始值/持久值一致性断言。
+- sing-box 1.14.3 官方版本/API version 4、SubscribeServiceStatus、GetStartedAt、SubscribeStatus 与 reset 连接快照核查及实测通过。原生与 Clash 认证/连接分开；实验 V2Ray Stats 官方发布构建未启用，故障独立，不伪造用户累计。
+- 四个实际协议 VLESS/Trojan/Hysteria2/AnyTLS：同名 `client-00` 分属四 inbound，分别通过实际代理执行 1 MiB 下载/上传，正确用户方向与归属。每次下载大约 upload=73、download=1,048,697，每次上传大约 upload=1,048,673、download=118（HTTP 开销）；不是平均分配实例流量。完整配置资产、API 断开/认证失败保留、只读诊断不改基线通过。
+- 原生用户计量只累计被观察稳定连接差值；连接第一观察为基线。它有采样覆盖限制，明确未宣称完整历史用户总量、物理设备或完整在线 IP。
+- 008 升级009–012不交换旧数据、不丢资产；来源未知旧 cursor/Provider切换/版本改变重新基线；基线及零增量来源记录、30 天来源归档、防重复归档通过。原始增量与小时/日 ledger 的原一致性检查保持通过。
+- 历史 HY 修复：只读 Dry Run、来源证据必填、自动备份、限定实例/截止、原始+小时/日/归档同事务纠正、月查询、重复运行不二次交换、保留新方向/current cursor、拒绝过宽截止选中新方向、修复后归档通过。仅修复隔离测试库，未读取/修复生产库。
+- **真实 Docker 管理验收通过**：官方校验 SHA256 的 sing-box musl 发布包构建 `tml-singbox-v14-test`；宿主 Docker CLI；VLESS/Hysteria2/AnyTLS 每种真实添加/修改/删除，官方 check、备份原子保存、确认后重启、新 epoch/STARTED/API 健康、监听/其他 inbound 参数不变。真实启动失败注入（测试证书不可用）后恢复原配置并启动成功。单文件 bind、合并配置、其他版本写入保守拒绝。
+- 管理测试同时覆盖 hash 冲突、删除/重启确认、认证、幂等 apply/rollback、备份/审计不泄漏凭据。后台测试经真实宿主代理查询、增删改、待重启/已应用、三个 inbound 完整资产与审计通过。
+- 最终浏览器 `scripts/core-e2e.cjs`：真实四核心 × 360/768/1440 共12组；统一检测/诊断入口、过滤、历史、真实版本、Secret/UUID 脱敏、无横向溢出、无页面错误通过。修正诊断过滤重复刷新及“完成提示早于详情刷新”造成的历史展开竞态。
+- 最终 `scripts/e2e.cjs`：基础八页24组尺寸、服务器 CRUD、实例授权、采集、配置发现、订阅轮换、手机表单、深色主题通过；这是隔离 HTTP fixture 验证，不是生产流量。原 Xray `scripts/xray-e2e.cjs` 三尺寸真实版本/离线 Clients/只读诊断/脱敏通过。
+- 生产镜像构建通过；最终外层 Compose、外部专用网络、非 root、只读文件系统、宿主 data/backups bind-mount、健康、备份、重启持久化通过。修正 smoke 工具 HTTP 超时/关闭测试连接，使 Docker 重启前后的请求不会无限等待。测试使用独立临时数据库、容器和网络，清理后保留结果 JSON。
+- CI 已加入官方 musl 镜像构建、Docker恢复测试和宿主代理浏览器验收；**远程 CI 尚未运行**。用户 VPS、真实配置路径/API Secret/历史来源、Nginx、长期负载和现场升级均**未验证**，未改动任何生产核心。
+
+详细官方依据、Provider 能力矩阵、文件清单、迁移、宿主代理部署和历史修复命令见 [v1.4交付说明](v1.4.md)。
+
 ## v1.3 四核心 API 诊断统一化验证（2026-10-10）
 
 - 已核实并校验官方发布资产 SHA256：Xray 26.3.27、Hysteria2 2.13.0、sing-box 1.14.3、V2Fly 5.53.0。Linux Alpine 实测使用官方 sing-box musl 发布包；普通 glibc 包不适用于该测试镜像。

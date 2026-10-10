@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	_ "modernc.org/sqlite"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,4 +115,29 @@ func (s *Store) Rows(ctx context.Context, q string, args ...any) ([]map[string]a
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// OpenReadOnly is used by audits: it never applies migrations or alters pragmas.
+func OpenReadOnly(path, zone string) (*Store, error) {
+	absolute, e := filepath.Abs(path)
+	if e != nil {
+		return nil, e
+	}
+	uri := "file:" + (&url.URL{Path: filepath.ToSlash(absolute)}).EscapedPath() + "?mode=ro"
+	db, e := sql.Open("sqlite", uri)
+	if e != nil {
+		return nil, e
+	}
+	db.SetMaxOpenConns(1)
+	loc, e := time.LoadLocation(zone)
+	if e != nil {
+		db.Close()
+		return nil, e
+	}
+	var stored string
+	if e = db.QueryRow("SELECT value FROM settings WHERE key='aggregation_timezone'").Scan(&stored); e != nil || stored != zone {
+		db.Close()
+		return nil, fmt.Errorf("use the stored aggregation timezone")
+	}
+	return &Store{DB: db, Location: loc}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 	"traffic-manager-lite/internal/core"
 	"traffic-manager-lite/internal/storage"
@@ -28,8 +29,12 @@ func (s Service) saveObservation(ctx context.Context, i core.Instance, o observa
 			if asset.Email == "" {
 				continue
 			}
+			inbound := ""
+			if i.CoreType == "singbox" {
+				inbound = asset.Inbound
+			}
 			var exists int
-			e = tx.QueryRowContext(ctx, "SELECT id FROM identities WHERE instance_id=? AND scope='user' AND core_user_key=? LIMIT 1", i.ID, asset.Email).Scan(&exists)
+			e = tx.QueryRowContext(ctx, "SELECT id FROM identities WHERE instance_id=? AND scope='user' AND core_user_key=? AND inbound_tag=? LIMIT 1", i.ID, asset.Email, inbound).Scan(&exists)
 			if e == sql.ErrNoRows {
 				res, err := tx.ExecContext(ctx, "INSERT INTO users(display_name,created_at,updated_at) VALUES(?,?,?)", asset.Email, now, now)
 				if err != nil {
@@ -39,7 +44,7 @@ func (s Service) saveObservation(ctx context.Context, i core.Instance, o observa
 				if err != nil {
 					return err
 				}
-				if _, e = tx.ExecContext(ctx, "INSERT INTO identities(user_id,instance_id,inbound_tag,core_user_key,scope) VALUES(?,?,'',?,'user')", uid, i.ID, asset.Email); e != nil {
+				if _, e = tx.ExecContext(ctx, "INSERT INTO identities(user_id,instance_id,inbound_tag,core_user_key,scope) VALUES(?,?,?,?,'user')", uid, i.ID, inbound, asset.Email); e != nil {
 					return e
 				}
 			} else if e != nil {
@@ -126,6 +131,58 @@ func (s Service) saveObservation(ctx context.Context, i core.Instance, o observa
 			return e
 		}
 	}
+	if i.CoreType == "singbox" {
+		assets, err := tx.QueryContext(ctx, "SELECT DISTINCT inbound_tag,email FROM core_clients WHERE instance_id=? AND present=1", i.ID)
+		if err != nil {
+			return err
+		}
+		pairs := [][2]string{}
+		for assets.Next() {
+			var a, b string
+			assets.Scan(&a, &b)
+			pairs = append(pairs, [2]string{a, b})
+		}
+		assets.Close()
+		for _, pair := range pairs {
+			state, basis := "unknown", o.onlineBasis
+			var n any
+			if o.onlineOK {
+				var previous sql.NullInt64
+				tx.QueryRowContext(ctx, "SELECT online_count FROM core_asset_states WHERE instance_id=? AND inbound_tag=? AND email=?", i.ID, pair[0], pair[1]).Scan(&previous)
+				if previous.Valid {
+					state = "offline"
+					n = int64(0)
+				}
+				for _, v := range o.online {
+					if v.InboundTag == pair[0] && v.UserKey == pair[1] {
+						n = v.Count
+						state = "online"
+					}
+				}
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO core_asset_states VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,inbound_tag,email) DO UPDATE SET online_state=excluded.online_state,online_count=excluded.online_count,online_kind=excluded.online_kind,online_basis=excluded.online_basis,checked_at=excluded.checked_at", i.ID, pair[0], pair[1], state, n, "session", basis, now); err != nil {
+				return err
+			}
+		}
+	}
+	for _, p := range o.providerSnapshots {
+		if p.Connections != nil {
+			b, err := json.Marshal(p.Connections)
+			if err != nil || len(b) > 4<<20 {
+				return fmt.Errorf("connection snapshot limit")
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO core_connection_snapshots VALUES(?,?,?,?,?,?) ON CONFLICT(instance_id,provider_type) DO UPDATE SET collected_at=excluded.collected_at,capability_status=excluded.capability_status,metric_scope=excluded.metric_scope,connections_json=excluded.connections_json", i.ID, p.Provider, now, p.Status, "connection", string(b)); err != nil {
+				return err
+			}
+		}
+		b, err := json.Marshal(p.Summary)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO provider_observations VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,provider_type,metric_scope) DO UPDATE SET capability_status=excluded.capability_status,collected_at=excluded.collected_at,instance_version=excluded.instance_version,config_revision=excluded.config_revision,summary_json=excluded.summary_json", i.ID, p.Provider, p.Scope, p.Status, now, o.report.Version, o.configRevision, string(b)); err != nil {
+			return err
+		}
+	}
 	// Diagnostics do not enter this function. Failed Online does not overwrite snapshots.
 	if o.onlineOK {
 		b, _ := json.Marshal(o.online)
@@ -135,7 +192,7 @@ func (s Service) saveObservation(ctx context.Context, i core.Instance, o observa
 	}
 	caps := []core.Capability{{Metric: "user_traffic", Status: "unknown", Reason: "只按实际用户计数器确认；空结果不证明每种协议可统计"}, {Metric: "inbound_traffic", Status: "unknown"}}
 	for _, r := range o.records {
-		if o.statsOK && r.Scope == "user" {
+		if o.statsOK && r.Scope == "user" && (r.UserKey != "" || len(r.Connections) > 0) {
 			caps[0].Status = "supported"
 		}
 		if o.statsOK && r.Scope == "inbound" {

@@ -1,5 +1,7 @@
 # v1.3 多核心 API 检测与诊断统一化
 
+**v1.4 更正：Hysteria2 原方向夹具测试不足，真实定向流量证明 Upload=tx、Download=rx。旧版映射错误，升级及历史审核见 [v1.4](v1.4.md)。**
+
 核实日期：2026-10-10。官方 GitHub `releases/latest` 的非预发布正式版：Xray v26.3.27、Hysteria app/v2.13.0、sing-box v1.14.3、V2Fly v5.53.0。已核对对应 tag 的 schema/实现及 Windows/Linux 发布二进制 SHA256；不依据镜像 latest 推断实际版本。
 
 ## 原有问题
@@ -16,7 +18,7 @@
 | 核心 | 完整 Clients | Stats | Online / 连接 | 实际版本 |
 |---|---|---|---|---|
 | Xray 26.3.27 | HandlerService 的 ListInbounds、GetInboundUsers、GetInboundUsersCount；运行时与文件分别保存 | QueryStats/GetStats reset=false，GetSysStats uptime；用户计数器无 inbound 维度 | 官方在线 map / IP 引用计数；缺项 Unknown，空列表不能判离线；不是设备数 | 官方 API 无版本字段；受控宿主版本证据，否则 Unknown |
-| Hysteria2 2.13.0 | password 模式一个 `user` 身份；userpass 配置全部用户名；HTTP/command 必须提供认证后端完整导出 | GET /traffic，rx=客户端上传、tx=客户端下载；不清零 | GET /online 是客户端实例/设备数；GET /dump/streams 是 TCP 代理 QUIC 流；在线 IP Unsupported | Traffic Stats API 无版本方法；受控证据，否则 Unknown |
+| Hysteria2 2.13.0 | password 模式一个 `user` 身份；userpass 配置全部用户名；HTTP/command 必须提供认证后端完整导出 | GET /traffic；v1.3 错误映射为 rx 上传/tx 下载；v1.4 实测已修正为 tx 上传/rx 下载；不清零 | GET /online 是客户端实例/设备数；GET /dump/streams 是 TCP 代理 QUIC 流；在线 IP Unsupported | Traffic Stats API 无版本方法；受控证据，否则 Unknown |
 | sing-box 1.14.3 | 配置 inbounds.users（VLESS、Trojan、Hysteria2、AnyTLS 等）；三套 API 均不能枚举全部服务端用户 | V2Ray 兼容 StatsService 的实际用户/inbound 计数；原生 SubscribeStatus 的实例总量；Clash /connections 总量为备用，实例总量只保存一份 | 原生完整 reset 连接快照，按实际 user 映射 session；Clash 只能观测连接，元数据没有服务端用户身份，不推导用户在线/设备数 | 原生 GetVersion；Clash /version；安全证据备用。两个 API 版本不一致则 Unknown 并说明 |
 | V2Fly 5.53.0 | HandlerService 只有增删改，没有 Xray 用户/Inbound 枚举接口；使用配置 clients/accounts | 官方独立 StatsService QueryStats reset=false、GetSysStats uptime | 逐用户在线/IP Unsupported；Observatory GetOutboundStatus 是出口健康，不是用户在线 | 官方管理 API 无版本字段；受控证据，否则 Unknown |
 

@@ -55,7 +55,7 @@ func (a *Adapter) CollectTraffic(ctx context.Context) ([]core.TrafficRecord, err
 		if v.TX == nil || v.RX == nil || *v.TX < 0 || *v.RX < 0 {
 			return nil, fmt.Errorf("negative Hysteria2 counter")
 		}
-		out = append(out, core.TrafficRecord{ServerID: a.Instance.ServerID, InstanceID: a.Instance.ID, UserKey: k, Scope: "user", UploadBytes: *v.RX, DownloadBytes: *v.TX, CounterMode: "cumulative", CollectedAt: now, Source: "hysteria2"})
+		out = append(out, core.TrafficRecord{ServerID: a.Instance.ServerID, InstanceID: a.Instance.ID, UserKey: k, Scope: "user", UploadBytes: *v.TX, DownloadBytes: *v.RX, CounterMode: "cumulative", CollectedAt: now, Source: "hysteria2", EpochID: "hy-client-direction-v2", UploadCounter: "tx", DownloadCounter: "rx", Direction: "server_to_remote_tx=client_upload;remote_to_server_rx=client_download"})
 	}
 	return out, nil
 }

@@ -9,3 +9,5 @@
 @media(max-width:767px){.diagnostic-table table{display:block;min-width:0}.diagnostic-table thead{display:none}.diagnostic-table tbody{display:grid;gap:12px}.diagnostic-table tr{display:block;border:1px solid var(--line);border-radius:10px;padding:10px}.diagnostic-table td{display:grid;grid-template-columns:80px minmax(0,1fr);gap:8px;max-width:none;padding:8px 0;border:0;white-space:normal;overflow-wrap:anywhere}.diagnostic-table td::before{content:attr(data-label);color:var(--muted)}.diagnostic-table td small{grid-column:2}.diagnostic-table .badge{justify-self:start}}
 
 [hidden]{display:none!important}
+
+.settings-list > div{min-width:0;overflow-wrap:anywhere}.panel > p{overflow-wrap:anywhere}.toolbar button{max-width:100%;overflow-wrap:anywhere}

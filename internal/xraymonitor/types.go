@@ -12,6 +12,9 @@ type Client struct {
 	Fingerprint string `json:"-"`
 }
 type Check struct {
+	Provider          string `json:"provider_type"`
+	Scope             string `json:"metric_scope"`
+	Direction         string `json:"traffic_direction"`
 	Evidence          string `json:"evidence"`
 	Response          string `json:"response_summary"`
 	ApplicableVersion string `json:"applicable_version"`

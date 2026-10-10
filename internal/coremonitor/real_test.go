@@ -271,7 +271,7 @@ func TestOfficialSingBoxDiagnostics(t *testing.T) {
 	for n := 0; n < 10; n++ {
 		users = append(users, map[string]string{"name": fmt.Sprintf("client-%02d", n), "uuid": fmt.Sprintf("00000000-0000-4000-8000-%012d", n+1)})
 	}
-	cfg := map[string]any{"log": map[string]any{"level": "error"}, "inbounds": []any{map[string]any{"type": "vless", "tag": "vless-test", "listen": "127.0.0.1", "listen_port": inbound, "users": users}, map[string]any{"type": "trojan", "tag": "trojan-test", "listen": "127.0.0.1", "listen_port": freePort(t), "users": []any{map[string]string{"name": "trojan-user", "password": "private-trojan-password"}}, "tls": map[string]any{"enabled": true, "certificate_path": cert, "key_path": key}}, map[string]any{"type": "hysteria2", "tag": "hy-test", "listen": "127.0.0.1", "listen_port": freeUDPPort(t), "users": []any{map[string]string{"name": "hy-user", "password": "private-hy-password"}}, "tls": map[string]any{"enabled": true, "certificate_path": cert, "key_path": key}}, map[string]any{"type": "anytls", "tag": "anytls-test", "listen": "127.0.0.1", "listen_port": freePort(t), "users": []any{map[string]string{"name": "anytls-user", "password": "private-anytls-password"}}, "tls": map[string]any{"enabled": true, "certificate_path": cert, "key_path": key}}}, "outbounds": []any{map[string]string{"type": "direct", "tag": "direct"}}, "services": []any{map[string]any{"type": "api", "listen": "127.0.0.1", "listen_port": native, "secret": secret, "dashboard": false}}, "experimental": map[string]any{"clash_api": map[string]any{"external_controller": fmt.Sprintf("127.0.0.1:%d", clash), "secret": secret}}}
+	cfg := map[string]any{"log": map[string]any{"level": "error"}, "inbounds": []any{map[string]any{"type": "vless", "tag": "vless-test", "listen": "127.0.0.1", "listen_port": inbound, "users": users}, map[string]any{"type": "trojan", "tag": "trojan-test", "listen": "127.0.0.1", "listen_port": freePort(t), "users": []any{map[string]string{"name": "client-00", "password": "private-trojan-password"}}, "tls": map[string]any{"enabled": true, "certificate_path": cert, "key_path": key}}, map[string]any{"type": "hysteria2", "tag": "hy-test", "listen": "127.0.0.1", "listen_port": freeUDPPort(t), "users": []any{map[string]string{"name": "client-00", "password": "private-hy-password"}}, "tls": map[string]any{"enabled": true, "certificate_path": cert, "key_path": key}}, map[string]any{"type": "anytls", "tag": "anytls-test", "listen": "127.0.0.1", "listen_port": freePort(t), "users": []any{map[string]string{"name": "client-00", "password": "private-anytls-password"}}, "tls": map[string]any{"enabled": true, "certificate_path": cert, "key_path": key}}}, "outbounds": []any{map[string]string{"type": "direct", "tag": "direct"}}, "services": []any{map[string]any{"type": "api", "listen": "127.0.0.1", "listen_port": native, "secret": secret, "dashboard": false}}, "experimental": map[string]any{"clash_api": map[string]any{"external_controller": fmt.Sprintf("127.0.0.1:%d", clash), "secret": secret}}}
 	b, _ := json.Marshal(cfg)
 	os.WriteFile(i.ConfigPath, b, 0600)
 	stop := process(t, binary, "run", "-c", i.ConfigPath)
@@ -300,9 +300,23 @@ func TestOfficialSingBoxDiagnostics(t *testing.T) {
 		connections = append(connections, socksConnection(t, port, target))
 	}
 	r = observeReady(t, s, i)
-	if count(t, s, "SELECT count(*) FROM core_user_states WHERE online_state='online'") != 4 {
+	if count(t, s, "SELECT count(*) FROM core_asset_states WHERE online_state='online'") != 4 {
 		t.Fatal("actual four-protocol user mappings not observed")
 	}
+	for _, connection := range connections {
+		assertEcho(t, connection)
+	}
+	s.Observe(context.Background(), i, false, "verified_native_user_traffic")
+	var upload, download int64
+	s.Store.DB.QueryRow("SELECT COALESCE(SUM(d.upload_bytes),0),COALESCE(SUM(d.download_bytes),0) FROM traffic_daily d JOIN identities identity ON identity.id=d.identity_id WHERE identity.scope='user'").Scan(&upload, &download)
+	if upload <= 0 || download <= 0 {
+		t.Fatal("actual per-user native connection flow absent", upload, download)
+	}
+	if count(t, s, "SELECT count(*) FROM identities WHERE core_user_key='client-00' AND scope='user'") != 4 {
+		t.Fatal("same user name across inbounds merged")
+	}
+	t.Logf("native four-protocol observed user traffic upload=%d download=%d, four separately attributed same-name assets", upload, download)
+	verifyNativeDirections(t, s, i, proxies, cfg)
 	before := count(t, s, "SELECT count(*) FROM traffic_cursors")
 	r, e := s.Observe(context.Background(), i, true, "manual")
 	if e != nil {

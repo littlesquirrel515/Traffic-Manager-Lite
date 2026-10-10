@@ -144,6 +144,14 @@ func (a *API) online(ctx context.Context) ([]map[string]any, error) {
 	for _, state := range states {
 		stateMap[fmt.Sprint(state["instance_id"])+"\x00"+fmt.Sprint(state["email"])] = state
 	}
+	assetRows, err := a.Store.Rows(ctx, "SELECT * FROM core_asset_states")
+	if err != nil {
+		return nil, err
+	}
+	assets := map[string]map[string]any{}
+	for _, state := range assetRows {
+		assets[fmt.Sprint(state["instance_id"])+"\x00"+fmt.Sprint(state["inbound_tag"])+"\x00"+fmt.Sprint(state["email"])] = state
+	}
 	out := []map[string]any{}
 	now := time.Now()
 	for _, i := range ident {
@@ -159,6 +167,24 @@ func (a *API) online(ctx context.Context) ([]map[string]any, error) {
 		if s, ok := i["last_active_at"].(string); ok {
 			t, er := time.Parse(time.RFC3339Nano, s)
 			i["active"] = er == nil && now.Sub(t) <= a.Config.ActiveWindow
+		}
+		if inst.CoreType == "singbox" && fmt.Sprint(i["inbound_tag"]) != "" {
+			state := assets[fmt.Sprint(id)+"\x00"+fmt.Sprint(i["inbound_tag"])+"\x00"+fmt.Sprint(i["core_user_key"])]
+			i["basis"] = "此 inbound 用户尚无可靠连接观测"
+			if state != nil {
+				i["updated_at"] = state["checked_at"]
+				i["basis"] = state["online_basis"]
+				t, err := time.Parse(time.RFC3339Nano, fmt.Sprint(state["checked_at"]))
+				if err == nil && now.Sub(t) <= 2*a.Config.Interval+a.Config.Timeout {
+					i["status"] = state["online_state"]
+					i["count"] = state["online_count"]
+					i["kind"] = state["online_kind"]
+				} else {
+					i["status"] = "stale"
+				}
+			}
+			out = append(out, i)
+			continue
 		}
 		if inst.CoreType == "xray" || stateMap[fmt.Sprint(id)+"\x00"+fmt.Sprint(i["core_user_key"])] != nil {
 			i["basis"] = "没有成功的逐用户在线统计项，无法可靠判断"

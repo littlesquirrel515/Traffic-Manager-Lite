@@ -27,6 +27,8 @@ type observation struct {
 	report                  Report
 	clients                 []Client
 	clientsOK               bool
+	configRevision          string
+	providerSnapshots       []core.ProviderSnapshot
 	records                 []core.TrafficRecord
 	online                  []core.OnlineRecord
 	statsOK, onlineOK       bool

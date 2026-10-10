@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"strconv"
+	"strings"
 	"time"
 	"traffic-manager-lite/internal/adapters/stats"
 	"traffic-manager-lite/internal/core"
@@ -66,6 +67,22 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 						cs = append(cs, stats.Counter{Name: v.Name, Value: v.Value})
 					}
 					o.records, e = stats.Records(i, cs)
+					if e == nil {
+						filtered := []core.TrafficRecord{}
+						for _, record := range o.records {
+							record.Source = "singbox-v2ray"
+							if record.Scope == "user" {
+								tag, ok := s.uniqueUserInbound(i, o, record.UserKey)
+								if !ok {
+									continue
+								}
+								record.InboundTag = tag
+								record.Mapped = true
+							}
+							filtered = append(filtered, record)
+						}
+						o.records = filtered
+					}
 				}
 			}
 		}
@@ -82,6 +99,25 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 		}
 		return
 	}
+	s.bounded(ctx, func(c context.Context) {
+		start := time.Now()
+		conn, e := s.dial(c, i, nativeEndpoint(i))
+		n := 0
+		if e == nil {
+			defer conn.Close()
+			stream, err := native.NewStartedServiceClient(conn).SubscribeServiceStatus(auth(c, i), &emptypb.Empty{})
+			e = err
+			if e == nil {
+				v, err := stream.Recv()
+				e = err
+				if e == nil {
+					n = int(v.Status)
+					o.providerSnapshots = append(o.providerSnapshots, core.ProviderSnapshot{Provider: "Native gRPC", Scope: "runtime", Status: "Available", Summary: map[string]any{"service_state": v.Status.String()}})
+				}
+			}
+		}
+		o.check("runtime", "原生 SubscribeServiceStatus", "/daemon.StartedService/SubscribeServiceStatus", "只读取首个生命周期状态；错误正文不保存", "1.14.3 官方状态枚举", start, n, e)
+	})
 	epoch := ""
 	s.bounded(ctx, func(c context.Context) {
 		start := time.Now()
@@ -92,7 +128,11 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 			v, err := client.GetStartedAt(auth(c, i), &emptypb.Empty{})
 			e = err
 			if e == nil {
-				epoch = strconv.FormatInt(v.StartedAt, 10)
+				if v.StartedAt <= 0 {
+					e = fmt.Errorf("invalid startup evidence")
+				} else {
+					epoch = strconv.FormatInt(v.StartedAt, 10)
+				}
 			}
 		}
 		o.check("runtime", "原生 GetStartedAt", "/daemon.StartedService/GetStartedAt", "只读启动时间", "原生 API", start, 0, e)
@@ -111,11 +151,12 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 				e = err
 				if e == nil {
 					available = r.TrafficAvailable
+					o.providerSnapshots = append(o.providerSnapshots, core.ProviderSnapshot{Provider: "Native gRPC", Scope: "instance", Status: "Available", Summary: map[string]any{"memory": r.Memory, "goroutines": r.Goroutines, "connections_in": r.ConnectionsIn, "connections_out": r.ConnectionsOut, "upload": r.UplinkTotal, "download": r.DownlinkTotal, "traffic_available": r.TrafficAvailable, "epoch": epoch}})
 					if available {
 						if r.UplinkTotal < 0 || r.DownlinkTotal < 0 {
 							e = fmt.Errorf("invalid counter")
 						} else {
-							o.records = append(o.records, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "instance", UploadBytes: r.UplinkTotal, DownloadBytes: r.DownlinkTotal, CounterMode: "cumulative", EpochID: epoch, CollectedAt: time.Now(), Source: "singbox-native"})
+							o.records = append(o.records, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "instance", UploadBytes: r.UplinkTotal, DownloadBytes: r.DownlinkTotal, CounterMode: "cumulative", EpochID: epoch, CollectedAt: time.Now(), Source: "singbox-native", UploadCounter: "uplinkTotal", DownloadCounter: "downlinkTotal"})
 							n = 1
 							o.statsOK = true
 						}
@@ -151,19 +192,39 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 					} else {
 						seen := map[string]bool{}
 						users := map[string]int64{}
+						connectionCounters := []core.ConnectionCounter{}
+						details := []core.ConnectionDetail{}
 						for _, ev := range r.Events {
 							connection := ev.Connection
-							if connection == nil || connection.ClosedAt != 0 || ev.Type == native.ConnectionEventType_CONNECTION_EVENT_CLOSED || seen[connection.Id] {
+							if connection == nil || seen[connection.Id] {
 								continue
 							}
 							seen[connection.Id] = true
-							n++
-							if connection.User != "" && len(connection.User) <= 512 {
-								users[connection.User]++
+							details = append(details, core.ConnectionDetail{ID: connection.Id, Inbound: connection.Inbound, User: connection.User, Network: connection.Network, Source: connection.Source, Destination: connection.Destination, Domain: connection.Domain, Upload: connection.UplinkTotal, Download: connection.DownlinkTotal, Closed: connection.ClosedAt != 0})
+							if connection.User != "" && len(connection.User) <= 512 && s.knownAsset(i, o, connection.Inbound, connection.User) {
+								if connection.ClosedAt == 0 && ev.Type != native.ConnectionEventType_CONNECTION_EVENT_CLOSED {
+									n++
+									users[connection.Inbound+"\x00"+connection.User]++
+								}
+								if epoch != "" && connection.UplinkTotal >= 0 && connection.DownlinkTotal >= 0 {
+									connectionCounters = append(connectionCounters, core.ConnectionCounter{ID: connection.Id, Epoch: epoch, Inbound: connection.Inbound, User: connection.User, Upload: connection.UplinkTotal, Download: connection.DownlinkTotal})
+								}
 							}
 						}
-						for user, count := range users {
-							o.online = append(o.online, core.OnlineRecord{UserKey: user, Count: count, Kind: "session", Source: "singbox-native", CollectedAt: time.Now()})
+						o.providerSnapshots = append(o.providerSnapshots, core.ProviderSnapshot{Provider: "Native gRPC", Scope: "connection", Status: "Available", Summary: map[string]any{"connections": len(details), "coverage": "bounded active/closed snapshot"}, Connections: details})
+						for key, count := range users {
+							parts := strings.SplitN(key, "\x00", 2)
+							o.online = append(o.online, core.OnlineRecord{InboundTag: parts[0], UserKey: parts[1], Count: count, Kind: "session", Source: "singbox-native", CollectedAt: time.Now()})
+						}
+						if epoch != "" { // Native observed connection traffic takes precedence over compatibility counters.
+							o.statsOK = true
+							filtered := []core.TrafficRecord{}
+							for _, v := range o.records {
+								if v.Scope != "user" {
+									filtered = append(filtered, v)
+								}
+							}
+							o.records = append(filtered, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "user", Source: "singbox-native-connections", CounterMode: "cumulative", CollectedAt: time.Now(), Connections: connectionCounters, UploadCounter: "connection.uplinkTotal", DownloadCounter: "connection.downlinkTotal", Coverage: "observed_connection_deltas;first observation baseline;bounded closed history may miss traffic"})
 						}
 					}
 				}
@@ -171,7 +232,7 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 		}
 		o.onlineOK = e == nil
 		o.onlineKind = "session"
-		o.onlineBasis = "原生完整 reset 连接快照，按实际 user 字段统计 session；未具名连接不能映射用户"
+		o.onlineBasis = "原生完整 reset 连接快照，按 inbound+user 统计连接 session；不是设备数；未具名或未验证配置身份不能映射用户"
 		o.check("online", "原生 SubscribeConnections", "/daemon.StartedService/SubscribeConnections", "只读首个完整快照，不调用 CloseConnection", "原生 API；需要 reset=true，user 字段按协议实际返回", start, n, e)
 	})
 	if i.ClashEndpoint != "" {
@@ -179,6 +240,18 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 	} else {
 		o.note("connections", "Clash API", "Unknown", "未配置 Clash 地址，不代表核心不支持 Clash API", "可选；优先使用原生 API")
 	}
+	o.note("stats", "原生用户连接流量", func() string {
+		if o.onlineOK && epoch != "" {
+			for _, r := range o.records {
+				if r.Source == "singbox-native-connections" && len(r.Connections) > 0 {
+					return "Available"
+				}
+			}
+		}
+		return "Unknown"
+	}(), "仅累计已观测同一 connection ID 的差值；首次建基线，非完整用户总量，API 断连/历史淘汰期间可能遗漏", "inbound+user 必须唯一匹配配置资产；优先原生，不与兼容用户计数相加")
+	o.note("online", "在线设备数 / 在线 IP 数", "Unknown", "原生 API 提供连接 session 和 source 元数据，不证明物理设备/完整在线 IP 语义；不由连接数猜测", "只报告经验证的 inbound+user session")
+	o.note("clients", "运行时用户管理", "Unsupported", "1.14.3 原生 API 无服务端用户增删接口；使用受控配置校验及确认后的重启", "通过宿主配置代理，不能执行任意命令")
 	o.note("clients", "API 完整配置用户枚举", "Unsupported", "已核实原生/V2Ray/Clash API 均不提供完整服务端用户库；连接列表不能代替 Clients", "只读配置 users 支持 VLESS/Trojan/Hysteria2/AnyTLS 等协议")
 	o.note("online", "V2Ray compatible Online", "Unsupported", "sing-box experimental.v2rayapi.StatsService 不包含 Xray Online 方法", "使用原生连接快照，不调用独立 Hysteria2 HTTP API")
 }
@@ -235,9 +308,28 @@ func (s Service) clash(ctx context.Context, i core.Instance, o *observation, qui
 				e = fmt.Errorf("invalid clash snapshot")
 			} else {
 				n = len(*r.Connections)
+				details := []core.ConnectionDetail{}
+				for _, raw := range *r.Connections {
+					var v struct {
+						ID               string `json:"id"`
+						Upload, Download int64
+						Metadata         struct {
+							Network       string `json:"network"`
+							SourceIP      string `json:"sourceIP"`
+							DestinationIP string `json:"destinationIP"`
+							Host          string `json:"host"`
+						}
+					}
+					if json.Unmarshal(raw, &v) != nil {
+						continue
+					}
+					details = append(details, core.ConnectionDetail{ID: v.ID, Network: v.Metadata.Network, Source: v.Metadata.SourceIP, Destination: v.Metadata.DestinationIP, Domain: v.Metadata.Host, Upload: v.Upload, Download: v.Download})
+				}
+				o.providerSnapshots = append(o.providerSnapshots, core.ProviderSnapshot{Provider: "Clash", Scope: "connection", Status: "Available", Summary: map[string]any{"connections": n, "attribution": "instance_only"}, Connections: details})
+				o.providerSnapshots = append(o.providerSnapshots, core.ProviderSnapshot{Provider: "Clash", Scope: "instance", Status: "Available", Summary: map[string]any{"connections": n, "upload": *r.Upload, "download": *r.Download, "attribution": "instance only"}})
 			}
 		}
-		o.check("connections", "Clash /connections", "GET /connections", "只读数量，不调用 DELETE，不保存 IP/目标/连接内容", "连接观测可用，但官方元数据没有服务端用户身份，不能映射完整 Clients 或用户 Online", start, n, e)
+		o.check("connections", "Clash /connections", "GET /connections", "只读数量；连接明细独立快照，仅管理员可查，不进入诊断历史，不调用 DELETE", "连接观测可用，但官方元数据没有服务端用户身份，不能映射完整 Clients 或用户 Online", start, n, e)
 		if e == nil {
 			instanceAlreadyObserved := false
 			for _, record := range o.records {
@@ -246,7 +338,7 @@ func (s Service) clash(ctx context.Context, i core.Instance, o *observation, qui
 				}
 			}
 			if !instanceAlreadyObserved {
-				o.records = append(o.records, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "instance", UploadBytes: *r.Upload, DownloadBytes: *r.Download, CounterMode: "cumulative", CollectedAt: time.Now(), Source: "singbox-clash"})
+				o.records = append(o.records, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "instance", UploadBytes: *r.Upload, DownloadBytes: *r.Download, CounterMode: "cumulative", CollectedAt: time.Now(), Source: "singbox-clash", UploadCounter: "uploadTotal", DownloadCounter: "downloadTotal"})
 				o.statsOK = true
 			}
 			o.note("stats", "Clash 实例流量总量", "Available", "同一次只读 /connections 的 uploadTotal/downloadTotal 已校验；优先保留原生实例总量，仅持久化一份实例计数，不推导用户流量", "Clash 总量无启动标识；不可观测重启限制仍存在")

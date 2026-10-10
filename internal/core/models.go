@@ -14,14 +14,40 @@ type Capability struct {
 	Reason string `json:"reason,omitempty"`
 }
 type TrafficRecord struct {
-	ServerID, InstanceID                        int64
-	InboundTag, UserKey, Scope, Source, EpochID string
-	UploadBytes, DownloadBytes                  int64
-	CounterMode                                 string
-	CollectedAt                                 time.Time
-	BootEstimate                                *time.Time
+	ServerID, InstanceID                                                                 int64
+	InboundTag, UserKey, Scope, Source, EpochID                                          string
+	UploadBytes, DownloadBytes                                                           int64
+	CounterMode                                                                          string
+	InstanceVersion, ConfigRevision, UploadCounter, DownloadCounter, Direction, Coverage string
+	Mapped                                                                               bool
+	Connections                                                                          []ConnectionCounter
+	CollectedAt                                                                          time.Time
+	BootEstimate                                                                         *time.Time
+}
+type ConnectionDetail struct {
+	ID          string `json:"id"`
+	Inbound     string `json:"inbound"`
+	User        string `json:"user,omitempty"`
+	Network     string `json:"network"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Domain      string `json:"domain"`
+	Upload      int64  `json:"upload"`
+	Download    int64  `json:"download"`
+	Closed      bool   `json:"closed"`
+}
+type ProviderSnapshot struct {
+	Connections                                []ConnectionDetail `json:"-"`
+	Provider, Scope, Status, Version, Revision string
+	CollectedAt                                time.Time
+	Summary                                    any
+}
+type ConnectionCounter struct {
+	ID, Epoch, Inbound, User string
+	Upload, Download         int64
 }
 type OnlineRecord struct {
+	InboundTag  string    `json:"inbound_tag,omitempty"`
 	UserKey     string    `json:"user_key"`
 	Count       int64     `json:"count"`
 	Kind        string    `json:"kind"`

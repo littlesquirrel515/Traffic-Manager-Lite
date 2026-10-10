@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 	"traffic-manager-lite/internal/core"
 	pb "traffic-manager-lite/internal/proto/xray"
@@ -105,6 +106,47 @@ func (s Service) observe(ctx context.Context, i core.Instance, diagnostic bool, 
 			o.report.Authentication = "AuthenticationFailed"
 		} else if c.Status == "Available" && o.report.Authentication != "AuthenticationFailed" {
 			o.report.Authentication = "Available"
+		}
+	}
+	for j := range o.records {
+		o.records[j].InstanceVersion = o.report.Version
+		o.records[j].ConfigRevision = o.configRevision
+		if i.CoreType == "hysteria2" {
+			o.records[j].UploadCounter = "tx"
+			o.records[j].DownloadCounter = "rx"
+			o.records[j].Mapped = false
+			o.records[j].Direction = "server_to_remote_tx=client_upload;remote_to_server_rx=client_download"
+		}
+	}
+	for j := range o.report.Checks {
+		c := &o.report.Checks[j]
+		c.Scope = c.Group
+		c.Provider = "Config"
+		if c.Group != "clients" {
+			switch i.CoreType {
+			case "singbox":
+				c.Provider = "Native gRPC"
+				if strings.HasPrefix(c.API, "Clash") {
+					c.Provider = "Clash"
+				}
+				if strings.HasPrefix(c.API, "V2Ray") {
+					c.Provider = "V2Ray Stats"
+				}
+			case "hysteria2":
+				c.Provider = "Hysteria2 Traffic Stats"
+			default:
+				c.Provider = i.CoreType
+			}
+		}
+		if c.Group == "stats" {
+			c.Scope = "instance"
+			if c.Provider == "V2Ray Stats" || i.CoreType != "singbox" {
+				c.Scope = "user/inbound"
+			}
+			c.Direction = "客户端上传/下载"
+			if c.API == "原生用户连接流量" {
+				c.Scope = "user/connection（已观测差值，非完整总量）"
+			}
 		}
 	}
 	if !quick {

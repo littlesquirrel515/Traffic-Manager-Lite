@@ -1,0 +1,10 @@
+[
+  {
+    "instance_id": 3,
+    "container": "singbox-vless-hy-anytls",
+    "host_config": "/data/sing-box/configs/config.json",
+    "container_config": "/etc/sing-box/config.json",
+    "native_endpoint": "127.0.0.1:19090",
+    "api_secret": "REPLACE_WITH_THE_NATIVE_API_SECRET"
+  }
+]

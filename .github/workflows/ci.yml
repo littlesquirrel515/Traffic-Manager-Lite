@@ -26,6 +26,14 @@ jobs:
           TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
       - name: Download verified official multi-core binaries
         run: python3 scripts/download-test-cores.py
+      - name: Build official sing-box Docker integration image
+        run: |
+          python3 scripts/download-test-cores.py --musl
+          python3 scripts/build-test-singbox.py --binary .tools/official-cores/singbox/sing-box-1.14.3-linux-amd64-musl/sing-box
+      - name: Real controlled config changes and Docker recovery
+        run: go test -race -v ./internal/coremanage
+        env:
+          TML_TEST_DOCKER_SINGBOX_IMAGE: tml-singbox-v14-test
       - name: Real Hysteria2, sing-box and V2Fly integration
         run: go test -race -v ./internal/coremonitor
         env:
@@ -33,6 +41,8 @@ jobs:
           TML_TEST_SINGBOX_DIAGNOSTICS: ${{ github.workspace }}/.tools/official-cores/singbox/sing-box-1.14.3-linux-amd64/sing-box
           TML_TEST_V2FLY: ${{ github.workspace }}/.tools/official-cores/v2fly/v2ray
       - run: go build -o dist/traffic-manager-lite ./cmd/traffic-manager-lite
+      - run: go build -o dist/tml-core-agent ./cmd/tml-core-agent
+      - run: go build -o dist/tml-traffic-audit ./cmd/tml-traffic-audit
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -47,6 +57,7 @@ jobs:
           TML_PLAYWRIGHT_MODULE: ${{ github.workspace }}/.tools/ui/node_modules/playwright
       - run: node scripts/core-e2e.cjs
         env:
+          TML_TEST_DOCKER_SINGBOX_IMAGE: tml-singbox-v14-test
           TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
           TML_TEST_HYSTERIA2: ${{ github.workspace }}/.tools/official-cores/hysteria2/hysteria-linux-amd64
           TML_TEST_SINGBOX_DIAGNOSTICS: ${{ github.workspace }}/.tools/official-cores/singbox/sing-box-1.14.3-linux-amd64/sing-box

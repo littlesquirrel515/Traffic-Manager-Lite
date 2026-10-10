@@ -1,0 +1,1 @@
+CREATE TABLE core_connection_snapshots(instance_id INTEGER NOT NULL REFERENCES instances(id),provider_type TEXT NOT NULL,collected_at TEXT NOT NULL,capability_status TEXT NOT NULL,metric_scope TEXT NOT NULL,connections_json TEXT NOT NULL,PRIMARY KEY(instance_id,provider_type));

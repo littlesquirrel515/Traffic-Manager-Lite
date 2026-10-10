@@ -34,6 +34,9 @@ func (s Service) clients(i core.Instance, o *observation) {
 			b, e = os.ReadFile(path)
 		}
 	}
+	if e == nil {
+		o.configRevision = fmt.Sprintf("%x", sha256.Sum256(b))
+	}
 	var root map[string]any
 	if e == nil {
 		if i.CoreType == "hysteria2" {
@@ -84,6 +87,7 @@ func (s Service) clients(i core.Instance, o *observation) {
 		if len(inboundList) > 256 {
 			e = fmt.Errorf("inbound limit")
 		}
+		inbounds := []map[string]any{}
 		for inIndex, raw := range inboundList {
 			inbound := obj(raw)
 			if inbound == nil {
@@ -101,6 +105,7 @@ func (s Service) clients(i core.Instance, o *observation) {
 				settings := obj(inbound["settings"])
 				users = append(list(settings["clients"]), list(settings["accounts"])...)
 			}
+			inbounds = append(inbounds, map[string]any{"inbound": tag, "protocol": protocol, "user_count": len(users), "scope": "inbound", "runtime_effective": "Unknown"})
 			for n, rawUser := range users {
 				u := obj(rawUser)
 				if u == nil {
@@ -115,6 +120,9 @@ func (s Service) clients(i core.Instance, o *observation) {
 				}
 				add(tag, protocol, email, n)
 			}
+		}
+		if e == nil {
+			o.providerSnapshots = append(o.providerSnapshots, core.ProviderSnapshot{Provider: "Config", Scope: "inbound", Status: "Available", Summary: inbounds})
 		}
 	}
 	if len(o.clients) > 10000 {

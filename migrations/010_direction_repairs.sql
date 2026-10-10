@@ -1,0 +1,1 @@
+CREATE TABLE traffic_direction_repairs(instance_id INTEGER NOT NULL REFERENCES instances(id),source_profile TEXT NOT NULL,cutoff TEXT NOT NULL,affected_records INTEGER NOT NULL,backup_path TEXT NOT NULL,evidence TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(instance_id,source_profile,cutoff));

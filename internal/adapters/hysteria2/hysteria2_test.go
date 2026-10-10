@@ -28,7 +28,7 @@ func TestOfficialAPIDirectionsAndNoReset(t *testing.T) {
 	defer s.Close()
 	a := &Adapter{Instance: core.Instance{ID: 1, APIEndpoint: s.URL, APISecret: "secret"}, Client: s.Client()}
 	rows, e := a.CollectTraffic(context.Background())
-	if e != nil || len(rows) != 1 || rows[0].UploadBytes != 100 || rows[0].DownloadBytes != 300 {
+	if e != nil || len(rows) != 1 || rows[0].UploadBytes != 300 || rows[0].DownloadBytes != 100 {
 		t.Fatalf("direction %v %v", rows, e)
 	}
 	on, e := a.CollectOnline(context.Background())

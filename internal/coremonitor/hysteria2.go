@@ -27,7 +27,7 @@ func (s Service) hysteria2(ctx context.Context, i core.Instance, o *observation,
 					e = fmt.Errorf("invalid counter")
 					break
 				}
-				o.records = append(o.records, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "user", UserKey: key, UploadBytes: *v.RX, DownloadBytes: *v.TX, CounterMode: "cumulative", CollectedAt: time.Now(), Source: "hysteria2"})
+				o.records = append(o.records, core.TrafficRecord{InstanceID: i.ID, ServerID: i.ServerID, Scope: "user", UserKey: key, UploadBytes: *v.TX, DownloadBytes: *v.RX, CounterMode: "cumulative", CollectedAt: time.Now(), Source: "hysteria2", EpochID: "hy-client-direction-v2", UploadCounter: "tx", DownloadCounter: "rx", Direction: "server_to_remote_tx=client_upload;remote_to_server_rx=client_download"})
 			}
 		}
 		o.statsOK = e == nil

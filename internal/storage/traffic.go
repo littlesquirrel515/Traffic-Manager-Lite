@@ -21,6 +21,10 @@ func (s *Store) Apply(ctx context.Context, instanceID int64, records []core.Traf
 		return e
 	}
 	seen := map[string]bool{}
+	records, e = s.nativeRecords(ctx, tx, instanceID, records)
+	if e != nil {
+		return e
+	}
 	epochID := ""
 	for _, r := range records {
 		if r.BootEstimate != nil {
@@ -90,8 +94,8 @@ func (s *Store) Apply(ctx context.Context, instanceID int64, records []core.Traf
 			return e
 		}
 		var up, down int64
-		var epoch, last string
-		e = tx.QueryRowContext(ctx, "SELECT raw_upload,raw_download,epoch_id,updated_at FROM traffic_cursors WHERE identity_id=?", id).Scan(&up, &down, &epoch, &last)
+		var epoch, last, provider, version string
+		e = tx.QueryRowContext(ctx, "SELECT raw_upload,raw_download,epoch_id,updated_at,provider_type,instance_version FROM traffic_cursors WHERE identity_id=?", id).Scan(&up, &down, &epoch, &last, &provider, &version)
 		du, dd := int64(0), int64(0)
 		if e != nil && e != sql.ErrNoRows {
 			return e
@@ -101,13 +105,19 @@ func (s *Store) Apply(ctx context.Context, instanceID int64, records []core.Traf
 				continue
 			}
 			// A reset establishes a fresh baseline. Unobserved traffic is never estimated.
-			if (r.EpochID == "" || epoch == r.EpochID) && r.UploadBytes >= up && r.DownloadBytes >= down {
+			if provider == r.Source && (version == "" || r.InstanceVersion == "" || version == r.InstanceVersion) && (r.EpochID == "" || epoch == r.EpochID) && r.UploadBytes >= up && r.DownloadBytes >= down {
 				du = r.UploadBytes - up
 				dd = r.DownloadBytes - down
 			}
 		}
-		_, e = tx.ExecContext(ctx, "INSERT INTO traffic_cursors VALUES(?,?,?,?,?) ON CONFLICT(identity_id) DO UPDATE SET raw_upload=excluded.raw_upload,raw_download=excluded.raw_download,epoch_id=excluded.epoch_id,updated_at=excluded.updated_at", id, r.UploadBytes, r.DownloadBytes, r.EpochID, Stamp(r.CollectedAt))
+		_, e = tx.ExecContext(ctx, "INSERT INTO traffic_cursors(identity_id,raw_upload,raw_download,epoch_id,updated_at,provider_type,instance_version) VALUES(?,?,?,?,?,?,?) ON CONFLICT(identity_id) DO UPDATE SET raw_upload=excluded.raw_upload,raw_download=excluded.raw_download,epoch_id=excluded.epoch_id,updated_at=excluded.updated_at,provider_type=excluded.provider_type,instance_version=excluded.instance_version", id, r.UploadBytes, r.DownloadBytes, r.EpochID, Stamp(r.CollectedAt), r.Source, r.InstanceVersion)
 		if e != nil {
+			return e
+		}
+		if e = saveProvenance(ctx, tx, id, r); e != nil {
+			return e
+		}
+		if e = saveCounterObservation(ctx, tx, id, r, du, dd, s.Location); e != nil {
 			return e
 		}
 		if du == 0 && dd == 0 {
@@ -176,6 +186,9 @@ func (s *Store) Archive(ctx context.Context, now time.Time) (int64, error) {
 	_, e = tx.ExecContext(ctx, `INSERT INTO archive_daily_ledger SELECT date,identity_id,SUM(upload_delta),SUM(download_delta) FROM traffic_samples WHERE collected_at < ? GROUP BY date,identity_id
  ON CONFLICT(date,identity_id) DO UPDATE SET upload_bytes=upload_bytes+excluded.upload_bytes,download_bytes=download_bytes+excluded.download_bytes`, cutoff)
 	if e != nil {
+		return 0, e
+	}
+	if e = archiveCounterEvidence(ctx, tx, cutoff); e != nil {
 		return 0, e
 	}
 	res, e := tx.ExecContext(ctx, "DELETE FROM traffic_samples WHERE collected_at < ?", cutoff)

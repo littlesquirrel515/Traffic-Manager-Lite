@@ -6,6 +6,7 @@ option go_package = "traffic-manager-lite/internal/proto/singboxnative;nativepb"
 import "google/protobuf/empty.proto";
 service StartedService {
  rpc GetVersion(google.protobuf.Empty) returns(Version) {}
+ rpc SubscribeServiceStatus(google.protobuf.Empty) returns(stream ServiceStatus) {}
  rpc SubscribeStatus(SubscribeStatusRequest) returns(stream Status) {}
  rpc SubscribeConnections(SubscribeConnectionsRequest) returns(stream ConnectionEvents) {}
  rpc GetStartedAt(google.protobuf.Empty) returns(StartedAt) {}
@@ -28,3 +29,5 @@ message Connection {
  int64 uplinkTotal = 16; int64 downlinkTotal = 17; string rule = 18; string outbound = 19; string outboundType = 20; repeated string chainList = 21;
  // processInfo = 22 intentionally omitted; not needed for proxy-user monitoring.
 }
+
+message ServiceStatus { enum Type { IDLE = 0; STARTING = 1; STARTED = 2; STOPPING = 3; FATAL = 4; } Type status = 1; /* errorMessage 2 deliberately omitted */ }

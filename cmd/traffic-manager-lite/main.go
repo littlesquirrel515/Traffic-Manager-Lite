@@ -85,7 +85,7 @@ func run() error {
 	defer cancel()
 	scheduler := collector.New(ctx, store, c)
 	api := &httpapi.API{Store: store, Scheduler: scheduler, Config: c, Auth: auth}
-	server := &http.Server{Addr: c.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
+	server := &http.Server{Addr: c.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
 	done := make(chan struct{})
 	go func() { defer close(done); scheduler.Run() }()
 	errors := make(chan error, 1)

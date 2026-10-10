@@ -13,3 +13,5 @@ sing-box sources: SagerNet/sing-box v1.14.0 `experimental/v2rayapi/stats.proto` 
 Xray HandlerService 的 `xrayhandler/handler.proto` 是 v26.3.27 只读 wire projection，只生成 ListInbounds/GetInboundUsers/GetInboundUsersCount。嵌套字段保持官方 field numbers，省略完整 core.Config，避免载入完整核心运行时；不生成用户增删 RPC。Account 数据只在内存中用于识别协议/匿名资产哈希，不进入诊断历史。MPL-2.0 许可证已随文件保留。
 
 V1.3 多核心统一诊断：Stats wire schema 重新对照 Xray v26.3.27、V2Fly v5.53.0、sing-box v1.14.3；sing-box 原生投影字段保持兼容。新增 `v2flyobserve/observe.proto` 是 v5.53.0 ObservatoryService 只读投影，保留 GetOutboundStatus 的请求 Tag=1、响应 status=1、状态数组=1，仅获取数量。不引入用户变更或日志重启方法；handler/logger 的注册状态通过可选 ReflectionService 枚举验证。
+
+V1.4：原生投影再次按 sing-box 1.14.3 / API version 4 核实，新增只读 SubscribeServiceStatus 及官方状态枚举；错误正文仍省略。连接初始 reset 包含有界关闭历史，关闭记录不判在线，用户流量只累计稳定连接的实际观测差值。未生成 CloseConnection 或任何配置写入方法，服务端用户管理由独立受控配置代理执行。
