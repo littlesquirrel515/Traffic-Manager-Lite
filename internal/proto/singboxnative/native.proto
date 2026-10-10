@@ -1,3 +1,4 @@
+// Wire projection rechecked against official v1.14.3; no mutation methods.
 // Read-only projection of SagerNet/sing-box v1.14.0 daemon/started_service.proto.
 syntax = "proto3";
 package daemon;

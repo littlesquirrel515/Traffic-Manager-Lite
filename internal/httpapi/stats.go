@@ -136,7 +136,7 @@ func (a *API) online(ctx context.Context) ([]map[string]any, error) {
 	for _, i := range insts {
 		instMap[i.ID] = i
 	}
-	states, e := a.Store.Rows(ctx, "SELECT * FROM xray_user_states")
+	states, e := a.Store.Rows(ctx, "SELECT instance_id,email,stats_state,online_state,online_count,online_basis,checked_at,'ip' online_kind FROM xray_user_states UNION ALL SELECT instance_id,email,stats_state,online_state,online_count,online_basis,checked_at,online_kind FROM core_user_states")
 	if e != nil {
 		return nil, e
 	}
@@ -160,7 +160,7 @@ func (a *API) online(ctx context.Context) ([]map[string]any, error) {
 			t, er := time.Parse(time.RFC3339Nano, s)
 			i["active"] = er == nil && now.Sub(t) <= a.Config.ActiveWindow
 		}
-		if inst.CoreType == "xray" {
+		if inst.CoreType == "xray" || stateMap[fmt.Sprint(id)+"\x00"+fmt.Sprint(i["core_user_key"])] != nil {
 			i["basis"] = "没有成功的逐用户在线统计项，无法可靠判断"
 			if state, ok := stateMap[fmt.Sprint(id)+"\x00"+fmt.Sprint(i["core_user_key"])]; ok {
 				i["updated_at"] = state["checked_at"]
@@ -170,7 +170,7 @@ func (a *API) online(ctx context.Context) ([]map[string]any, error) {
 				if er == nil && now.Sub(t) <= 2*a.Config.Interval+a.Config.Timeout {
 					i["status"] = state["online_state"]
 					i["count"] = state["online_count"]
-					i["kind"] = "ip"
+					i["kind"] = state["online_kind"]
 				} else {
 					i["status"] = "stale"
 				}

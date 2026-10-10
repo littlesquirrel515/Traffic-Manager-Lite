@@ -2,18 +2,15 @@ package collector
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
-	"traffic-manager-lite/internal/adapters"
 	"traffic-manager-lite/internal/config"
 	"traffic-manager-lite/internal/core"
-	"traffic-manager-lite/internal/security"
+	"traffic-manager-lite/internal/coremonitor"
 	"traffic-manager-lite/internal/storage"
-	"traffic-manager-lite/internal/xraymonitor"
 )
 
 var ErrBusy = errors.New("此实例正在采集")
@@ -71,62 +68,18 @@ func (s *Scheduler) Collect(ctx context.Context, id int64) error {
 	if !inst.ServerEnabled {
 		return fmt.Errorf("服务器已停用，所属实例暂停采集")
 	}
-	if inst.CoreType == "xray" {
-		report, err := (xraymonitor.Service{Store: s.Store, Config: s.Config}).Observe(requestContext, *inst, false, "collection")
-		if err != nil {
-			return s.recordError(ctx, id, err)
-		}
-		for _, health := range report.Health {
-			if health.Status == "Error" {
-				return fmt.Errorf("%s: %s", health.Collector, health.Summary)
-			}
-		}
-		return nil
+	report, err := (coremonitor.Service{Store: s.Store, Config: s.Config}).Observe(requestContext, *inst, false, "collection")
+	if err != nil {
+		return s.recordError(ctx, id, err)
 	}
-	policy := (security.Policy{Allowed: s.Config.AllowedTargets}).ForEndpoints(inst.APIEndpoint, inst.ControlEndpoint)
-	for _, endpoint := range []string{inst.APIEndpoint, inst.ControlEndpoint} {
-		if endpoint != "" {
-			if e := policy.Check(ctx, security.TargetAddress(endpoint)); e != nil {
-				return s.recordError(ctx, id, e)
-			}
+	for _, health := range report.Health {
+		if health.Status == "Error" || health.Status == "Unreachable" || health.Status == "AuthenticationFailed" {
+			return fmt.Errorf("%s: %s", health.Collector, health.Summary)
 		}
 	}
-	a, e := adapters.New(*inst, policy)
-	if e != nil {
-		return s.recordError(ctx, id, e)
-	}
-	defer a.Close()
-	records, e := a.CollectTraffic(ctx)
-	if e == nil {
-		e = s.Store.Apply(ctx, id, records)
-	}
-	if e != nil {
-		persist, stop := context.WithTimeout(s.ctx, 2*time.Second)
-		defer stop()
-		caps, _ := json.Marshal(a.Capabilities())
-		_, _ = s.Store.DB.ExecContext(persist, "UPDATE instances SET capabilities_json=? WHERE id=?", string(caps), id)
-		return s.recordError(ctx, id, e)
-	}
-	online, oe := a.CollectOnline(ctx)
-	if oe == nil {
-		e = s.Store.SaveOnline(ctx, id, online)
-		if e != nil {
-			return e
-		}
-	}
-	caps, _ := json.Marshal(a.Capabilities())
-	persist, finish := context.WithTimeout(s.ctx, 2*time.Second)
-	defer finish()
-	if versioned, ok := a.(interface{ DetectedVersion() string }); ok {
-		_, _ = s.Store.DB.ExecContext(persist, "UPDATE instances SET detected_version=? WHERE id=?", versioned.DetectedVersion(), id)
-	}
-	errText := ""
-	if oe != nil && !errors.Is(oe, core.ErrUnsupported) {
-		errText = "在线指标采集失败，保留上次快照"
-	}
-	_, e = s.Store.DB.ExecContext(persist, "UPDATE instances SET last_collected_at=?,last_error=?,capabilities_json=? WHERE id=?", storage.Stamp(time.Now()), errText, string(caps), id)
-	return e
+	return nil
 }
+
 func (s *Scheduler) recordError(ctx context.Context, id int64, e error) error {
 	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
 	defer cancel()

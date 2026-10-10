@@ -48,6 +48,7 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("PATCH /api/v1/servers/{id}", a.updateServer)
 	admin.HandleFunc("DELETE /api/v1/servers/{id}", a.deleteServer)
 	admin.HandleFunc("GET /api/v1/xray/diagnostics", a.diagnosticSummary)
+	admin.HandleFunc("GET /api/v1/cores/diagnostics", a.diagnosticSummary)
 	admin.HandleFunc("GET /api/v1/instances/{id}/diagnostics", a.diagnosticDetails)
 	admin.HandleFunc("POST /api/v1/instances/{id}/diagnostics", a.diagnose)
 	admin.HandleFunc("GET /api/v1/instances/{id}/diagnostics/history", a.diagnosticHistory)
@@ -67,7 +68,7 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("GET /api/v1/traffic/summary", a.traffic)
 	admin.HandleFunc("GET /api/v1/traffic/history", a.traffic)
 	admin.HandleFunc("GET /api/v1/users", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, "SELECT u.*, (SELECT MAX(last_active_at) FROM identities WHERE user_id=u.id) last_active_at,(SELECT json_group_array(json_object('instance_id',i.instance_id,'state',st.stats_state,'checked_at',st.checked_at)) FROM identities i JOIN xray_user_states st ON st.instance_id=i.instance_id AND st.email=i.core_user_key WHERE i.user_id=u.id AND i.scope='user') stats_states FROM users u WHERE display_name LIKE ? ORDER BY display_name", "%"+r.URL.Query().Get("search")+"%")
+		a.rows(w, r, "SELECT u.*, (SELECT MAX(last_active_at) FROM identities WHERE user_id=u.id) last_active_at,(SELECT json_group_array(json_object('instance_id',i.instance_id,'state',st.stats_state,'checked_at',st.checked_at)) FROM identities i JOIN (SELECT instance_id,email,stats_state,checked_at FROM xray_user_states UNION ALL SELECT instance_id,email,stats_state,checked_at FROM core_user_states) st ON st.instance_id=i.instance_id AND st.email=i.core_user_key WHERE i.user_id=u.id AND i.scope='user') stats_states FROM users u WHERE display_name LIKE ? ORDER BY display_name", "%"+r.URL.Query().Get("search")+"%")
 	})
 	admin.HandleFunc("GET /api/v1/identities", func(w http.ResponseWriter, r *http.Request) {
 		a.rows(w, r, "SELECT i.*,x.name instance_name FROM identities i JOIN instances x ON x.id=i.instance_id WHERE i.scope='user' ORDER BY i.id")
@@ -212,6 +213,8 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 		CoreType        string  `json:"core_type"`
 		APIEndpoint     string  `json:"api_endpoint"`
 		ControlEndpoint string  `json:"control_endpoint"`
+		ClashEndpoint   string  `json:"clash_endpoint"`
+		ClashSecret     *string `json:"clash_secret"`
 		APISecret       *string `json:"api_secret"`
 		ConfigPath      string  `json:"config_path"`
 		Version         string  `json:"version"`
@@ -224,7 +227,7 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 		result(w, nil, fmt.Errorf("invalid instance"))
 		return
 	}
-	if e := security.ValidateEndpoint(d.APIEndpoint, d.CoreType == "hysteria2"); e != nil {
+	if e := security.ValidateEndpoint(d.APIEndpoint, d.CoreType == "hysteria2"); e != nil && !(d.CoreType == "singbox" && d.APIEndpoint == "" && (d.ControlEndpoint != "" || d.ClashEndpoint != "")) {
 		result(w, nil, e)
 		return
 	}
@@ -244,11 +247,21 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if d.ClashEndpoint != "" {
+		if d.CoreType != "singbox" {
+			result(w, nil, fmt.Errorf("Clash endpoint only applies to sing-box"))
+			return
+		}
+		if e := security.ValidateEndpoint(d.ClashEndpoint, true); e != nil {
+			result(w, nil, e)
+			return
+		}
+	}
 	if len(a.Config.AllowedTargets) > 0 {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		policy := security.Policy{Allowed: a.Config.AllowedTargets}
-		for _, endpoint := range []string{d.APIEndpoint, d.ControlEndpoint} {
+		for _, endpoint := range []string{d.APIEndpoint, d.ControlEndpoint, d.ClashEndpoint} {
 			if endpoint != "" {
 				if e := policy.Check(ctx, security.TargetAddress(endpoint)); e != nil {
 					result(w, nil, e)
@@ -262,13 +275,17 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 	if d.APISecret != nil {
 		secret = *d.APISecret
 	}
+	clashSecret := ""
+	if d.ClashSecret != nil {
+		clashSecret = *d.ClashSecret
+	}
 	var id int64
 	var e error
 	if r.Method == "PATCH" {
 		id, e = pathID(r)
 		if e == nil {
 			var res sql.Result
-			res, e = a.Store.DB.ExecContext(r.Context(), "UPDATE instances SET server_id=?,name=?,api_endpoint=?,control_endpoint=?,api_secret=CASE WHEN ? THEN ? ELSE api_secret END,config_path=?,version=?,enabled=?,updated_at=? WHERE id=? AND core_type=?", d.ServerID, d.Name, d.APIEndpoint, d.ControlEndpoint, d.APISecret != nil, secret, d.ConfigPath, d.Version, d.Enabled, now, id, d.CoreType)
+			res, e = a.Store.DB.ExecContext(r.Context(), "UPDATE instances SET server_id=?,name=?,api_endpoint=?,control_endpoint=?,clash_endpoint=?,api_secret=CASE WHEN ? THEN ? ELSE api_secret END,clash_secret=CASE WHEN ? THEN ? ELSE clash_secret END,config_path=?,version=?,enabled=?,updated_at=? WHERE id=? AND core_type=?", d.ServerID, d.Name, d.APIEndpoint, d.ControlEndpoint, d.ClashEndpoint, d.APISecret != nil, secret, d.ClashSecret != nil, clashSecret, d.ConfigPath, d.Version, d.Enabled, now, id, d.CoreType)
 			if e == nil {
 				n, _ := res.RowsAffected()
 				if n == 0 {
@@ -278,12 +295,12 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		var res sql.Result
-		res, e = a.Store.DB.ExecContext(r.Context(), "INSERT INTO instances(server_id,name,core_type,api_endpoint,api_secret,config_path,version,enabled,created_at,updated_at,control_endpoint) VALUES(?,?,?,?,?,?,?,?,?,?,?)", d.ServerID, d.Name, d.CoreType, d.APIEndpoint, secret, d.ConfigPath, d.Version, d.Enabled, now, now, d.ControlEndpoint)
+		res, e = a.Store.DB.ExecContext(r.Context(), "INSERT INTO instances(server_id,name,core_type,api_endpoint,api_secret,config_path,version,enabled,created_at,updated_at,control_endpoint,clash_endpoint,clash_secret) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", d.ServerID, d.Name, d.CoreType, d.APIEndpoint, secret, d.ConfigPath, d.Version, d.Enabled, now, now, d.ControlEndpoint, d.ClashEndpoint, clashSecret)
 		if e == nil {
 			id, e = res.LastInsertId()
 		}
 	}
-	if e == nil && d.CoreType == "xray" {
+	if e == nil {
 		a.Scheduler.QueueDiagnosis(id, "instance_saved")
 	}
 	result(w, map[string]int64{"id": id}, e)

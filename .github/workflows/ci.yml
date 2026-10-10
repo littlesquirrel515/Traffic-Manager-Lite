@@ -24,6 +24,14 @@ jobs:
         run: go test -race -v ./internal/xraymonitor -run TestRealXrayCollectorsAndDiagnostics
         env:
           TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
+      - name: Download verified official multi-core binaries
+        run: python3 scripts/download-test-cores.py
+      - name: Real Hysteria2, sing-box and V2Fly integration
+        run: go test -race -v ./internal/coremonitor
+        env:
+          TML_TEST_HYSTERIA2: ${{ github.workspace }}/.tools/official-cores/hysteria2/hysteria-linux-amd64
+          TML_TEST_SINGBOX_DIAGNOSTICS: ${{ github.workspace }}/.tools/official-cores/singbox/sing-box-1.14.3-linux-amd64/sing-box
+          TML_TEST_V2FLY: ${{ github.workspace }}/.tools/official-cores/v2fly/v2ray
       - run: go build -o dist/traffic-manager-lite ./cmd/traffic-manager-lite
       - uses: actions/setup-node@v4
         with:
@@ -36,6 +44,13 @@ jobs:
       - run: node scripts/xray-e2e.cjs
         env:
           TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
+          TML_PLAYWRIGHT_MODULE: ${{ github.workspace }}/.tools/ui/node_modules/playwright
+      - run: node scripts/core-e2e.cjs
+        env:
+          TML_TEST_XRAY: ${{ github.workspace }}/.tools/xray/xray
+          TML_TEST_HYSTERIA2: ${{ github.workspace }}/.tools/official-cores/hysteria2/hysteria-linux-amd64
+          TML_TEST_SINGBOX_DIAGNOSTICS: ${{ github.workspace }}/.tools/official-cores/singbox/sing-box-1.14.3-linux-amd64/sing-box
+          TML_TEST_V2FLY: ${{ github.workspace }}/.tools/official-cores/v2fly/v2ray
           TML_PLAYWRIGHT_MODULE: ${{ github.workspace }}/.tools/ui/node_modules/playwright
       - run: docker build -t traffic-manager-lite:ci .
       - name: Container health smoke test

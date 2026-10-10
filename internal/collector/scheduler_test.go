@@ -62,8 +62,8 @@ func TestNoOverlapOtherInstanceAndTimeoutPersistence(t *testing.T) {
 	if e = <-done; e == nil {
 		t.Fatal("timeout ignored")
 	}
-	if calls.Load() != 1 {
-		t.Fatal("overlapping request executed")
+	if calls.Load() != 3 {
+		t.Fatal("expected independent traffic/online/streams requests without overlapping collection")
 	}
 	var last string
 	if e = store.DB.QueryRow("SELECT last_error FROM instances WHERE id=1").Scan(&last); e != nil || last == "" {

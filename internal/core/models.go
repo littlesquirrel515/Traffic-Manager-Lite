@@ -43,6 +43,8 @@ type Instance struct {
 	CoreType        string       `json:"core_type"`
 	APIEndpoint     string       `json:"api_endpoint"`
 	ControlEndpoint string       `json:"control_endpoint"`
+	ClashEndpoint   string       `json:"clash_endpoint"`
+	ClashSecret     string       `json:"-"`
 	DetectedVersion string       `json:"detected_version"`
 	APISecret       string       `json:"-"`
 	ConfigPath      string       `json:"config_path"`

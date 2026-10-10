@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+	"traffic-manager-lite/internal/collector"
 )
 
 func TestServersCRUDPreservesLinkedInstances(t *testing.T) {
@@ -30,7 +32,15 @@ func TestServersCRUDPreservesLinkedInstances(t *testing.T) {
 	if r := call(t, h, "PATCH", "/api/v1/servers/1", map[string]any{"enabled": false}, true); r.Code != 200 {
 		t.Fatal(r.Body.String())
 	}
-	if e := a.Scheduler.Collect(context.Background(), 1); e == nil || !strings.Contains(e.Error(), "服务器已停用") {
+	var e error
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		e = a.Scheduler.Collect(context.Background(), 1)
+		if e != collector.ErrBusy {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if e == nil || !strings.Contains(e.Error(), "服务器已停用") {
 		t.Fatalf("disabled server collected: %v", e)
 	}
 	if r := call(t, h, "POST", "/api/v1/servers", create, true); r.Code != 200 {

@@ -22,7 +22,7 @@ type Service struct {
 }
 
 func (s Service) Observe(ctx context.Context, inst core.Instance, diagnostic bool, trigger string) (Report, error) {
-	o := observation{report: Report{InstanceID: inst.ID, CheckedAt: storage.Stamp(time.Now()), Version: "Unknown", Build: "Unknown", VersionSource: "unavailable", ConfigSource: "runtime_api; config_file 未提供", Connected: "Unknown"}, completeTags: map[string]bool{}, listedTags: map[string]bool{}, states: map[string]*State{}}
+	o := observation{report: Report{CoreType: "xray", APITypes: []string{"Xray gRPC"}, Authentication: "Unknown", VersionReason: "API 无版本方法；未取得可信宿主版本证据", InstanceID: inst.ID, CheckedAt: storage.Stamp(time.Now()), Version: "Unknown", Build: "Unknown", VersionSource: "unavailable", ConfigSource: "runtime_api; config_file 未提供", Connected: "Unknown"}, completeTags: map[string]bool{}, listedTags: map[string]bool{}, states: map[string]*State{}}
 	key, e := s.fingerprintKey(ctx)
 	if e != nil {
 		return o.report, e
@@ -30,6 +30,9 @@ func (s Service) Observe(ctx context.Context, inst core.Instance, diagnostic boo
 	o.fingerprintKey = key
 	s.configAssets(inst, &o)
 	s.versionEvidence(inst, &o.report)
+	if o.report.Version != "Unknown" {
+		o.report.VersionReason = ""
+	}
 	p := (security.Policy{Allowed: s.Config.AllowedTargets}).ForEndpoints(inst.APIEndpoint)
 	var conn *grpc.ClientConn
 	e = security.ValidateEndpoint(inst.APIEndpoint, false)
@@ -42,7 +45,11 @@ func (s Service) Observe(ctx context.Context, inst core.Instance, diagnostic boo
 	defer conn.Close()
 	// Each collector has its own deadline. One failed collector cannot cancel another.
 	run := func(f func(context.Context)) {
-		c, cancel := context.WithTimeout(ctx, s.Config.Timeout)
+		limit := s.Config.Timeout
+		if limit > 8*time.Second {
+			limit = 8 * time.Second
+		}
+		c, cancel := context.WithTimeout(ctx, limit)
 		defer cancel()
 		f(c)
 	}
@@ -111,13 +118,27 @@ func (s Service) Observe(ctx context.Context, inst core.Instance, diagnostic boo
 	}
 	o.report.Checks = append(o.report.Checks, Check{Group: "stats", API: "GetUsersStats", Status: usersStatsStatus, Method: "未调用（已核实正式版 schema 不存在此 RPC；其他版本/构建未知）", Params: "无", Code: "NotInOfficialSchema", Reason: "核实 v26.3.27 官方 StatsService 后未发现此方法，使用 QueryStats/GetStats", Required: "官方提供对应方法才可启用", Advice: "使用 QueryStats，reset=false", CheckedAt: o.report.CheckedAt})
 	for _, c := range o.report.Checks {
+		if c.Code == "Unimplemented" {
+			o.report.Connected = "Available"
+		}
 		if c.Status == "Available" {
 			o.report.Connected = "Available"
+			o.report.Authentication = "Available"
 			break
 		}
 	}
 	if o.report.Connected != "Available" {
-		o.report.Connected = "Error"
+		o.report.Connected = "Unknown"
+		for _, check := range o.report.Checks {
+			if check.Status == "Unreachable" {
+				o.report.Connected = "Unreachable"
+			}
+			if check.Status == "AuthenticationFailed" {
+				o.report.Connected = "Available"
+				o.report.Authentication = "AuthenticationFailed"
+				break
+			}
+		}
 	}
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
@@ -282,6 +303,9 @@ func (s Service) saveReport(ctx context.Context, inst core.Instance, r Report, t
 	}
 	_, e = tx.ExecContext(ctx, "INSERT INTO xray_runtime(instance_id,version,build_info,version_source,verified_at) VALUES(?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET version=excluded.version,build_info=excluded.build_info,version_source=excluded.version_source,verified_at=excluded.verified_at", inst.ID, r.Version, r.Build, r.VersionSource, r.CheckedAt)
 	if e != nil {
+		return e
+	}
+	if _, e = tx.ExecContext(ctx, "UPDATE instances SET detected_version=? WHERE id=?", r.Version, inst.ID); e != nil {
 		return e
 	}
 	return tx.Commit()

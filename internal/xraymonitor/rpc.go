@@ -33,13 +33,19 @@ func (o *observation) check(group, api, params string, start time.Time, count in
 		c.Reason = "请求失败（" + c.Code + "），未保存服务端错误体"
 		c.Advice = "检查 API 地址、网络、权限和运行配置"
 		switch status.Code(e) {
+		case codes.Unauthenticated, codes.PermissionDenied:
+			c.Status = "AuthenticationFailed"
+			c.Reason = "API 认证或授权失败"
+		case codes.Unavailable, codes.DeadlineExceeded:
+			c.Status = "Unreachable"
+			c.Reason = "API 无法连接或请求超时"
 		case codes.Unimplemented:
 			c.Status = "Unknown"
 			c.Reason = "服务未启用或版本不支持，单凭 Unimplemented 无法区分"
 			c.Advice = "核实运行版本及 api.services；不要依据镜像 latest 标签判断"
 			if strings.Contains(status.Convert(e).Message(), "unknown method") {
-				c.Status = "Unsupported"
-				c.Reason = "运行实例未提供此方法"
+				c.Status = "Unknown"
+				c.Reason = "当前运行端点没有此方法；不据此断言官方当前版本不支持"
 			}
 			if o.report.Version == "26.3.27" && strings.HasPrefix(status.Convert(e).Message(), "unknown service ") {
 				c.Status = "Disabled"
@@ -52,6 +58,9 @@ func (o *observation) check(group, api, params string, start time.Time, count in
 		}
 	}
 	c.Requests = 1
+	c.ApplicableVersion = o.report.Version
+	c.Evidence = "实际只读 RPC；reset=false"
+	c.Response = fmt.Sprintf("%d 项；%s", count, c.Code)
 	// Aggregate per-user online calls by method/result to keep history bounded.
 	if group == "online" && api != "GetAllOnlineUsers" {
 		for j := range o.report.Checks {

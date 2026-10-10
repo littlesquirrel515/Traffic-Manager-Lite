@@ -104,7 +104,7 @@ func (s Service) saveObservation(ctx context.Context, inst core.Instance, o obse
 		if h.Collector == "online" && h.Status == "Healthy" {
 			caps[2].Status = "supported"
 		}
-		if h.Status == "Error" || (h.Collector == "stats" && h.Status != "Healthy") {
+		if (h.Status == "Error" || h.Status == "Unreachable" || h.Status == "AuthenticationFailed") || (h.Collector == "stats" && h.Status != "Healthy") {
 			lastError += " " + h.Collector + ": " + h.Summary
 		}
 	}

@@ -11,6 +11,16 @@ import (
 	"traffic-manager-lite/internal/discovery"
 )
 
+// VersionEvidence reads a bounded, trusted host proof without calling the core.
+func (s Service) VersionEvidence(inst core.Instance) Report {
+	r := Report{CoreType: "xray", Version: "Unknown", Build: "Unknown", VersionSource: "unavailable", VersionReason: "API 无版本方法；未取得可信宿主证据"}
+	s.versionEvidence(inst, &r)
+	if r.Version != "Unknown" {
+		r.VersionReason = ""
+	}
+	return r
+}
+
 // Version evidence is generated on the host by a fixed read-only docker exec script.
 // The manager never mounts Docker socket or executes an administrator-supplied shell command.
 func (s Service) versionEvidence(inst core.Instance, r *Report) {

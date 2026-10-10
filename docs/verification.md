@@ -1,6 +1,21 @@
 # 验证记录
 
-日期：2026-10-09（Asia/Shanghai）。本记录区别开发验证与生产验收。
+日期：2026-10-10（Asia/Shanghai）。本记录区别开发验证与生产验收。
+
+## v1.3 四核心 API 诊断统一化验证（2026-10-10）
+
+- 已核实并校验官方发布资产 SHA256：Xray 26.3.27、Hysteria2 2.13.0、sing-box 1.14.3、V2Fly 5.53.0。Linux Alpine 实测使用官方 sing-box musl 发布包；普通 glibc 包不适用于该测试镜像。
+- 四核心各有独立诊断实现，统一检测/诊断入口、核心筛选、能力状态、实际版本/Unknown、证据、建议、耗时与历史；采集健康和只读诊断分别存储。保留原 Xray API 查询兼容。
+- 真实 Hysteria2 三个只读 HTTP 接口空响应仍为 Available；10 个离线配置用户保留。真实认证失败、API 断开、设备在线和代理流查询通过；诊断后原连接仍能传输数据。
+- 真实 sing-box 原生 gRPC、Clash 独立认证与连接快照通过；官方发布包未包含兼容统计编译能力时，不影响原生实例统计/配置用户。13 个离线资产涵盖 VLESS、Trojan、Hysteria2、AnyTLS；四协议实际连接的用户映射及诊断后连接存活通过。
+- 真实 V2Fly StatsService 与可选 ReflectionService 验证 HandlerService/LoggerService 注册；完整 API 用户枚举及用户 Online 明确 Unsupported。10 个离线配置用户、真实 VMess 流量与诊断后连接存活通过；未调用用户增删或日志重启。
+- Clients/Stats/Online 故障隔离、空计数不建假基线、手动诊断不更新业务健康/身份/cursor、Secret 不返回后台、外部认证完整用户导出过期保护均有测试。故障注入 HTTP fixture 与官方核心集成测试分开。
+- 旧库 001–006 升级 007/008 保留已有 Xray 资产/历史；新增私有 Clash Secret 与独立端点。原统计同事务、汇总和第 30/31 天归档测试继续通过。
+- Windows 官方核心集成与完整 Go 测试、Linux 四核心 `go test -race ./...`、`go vet ./...` 通过。Windows/Linux 二进制已生成；生产镜像已构建。
+- 浏览器：真实四核心 12 组核心/尺寸（360/768/1440）、基础八页 24 组夹具布局、原 Xray 三组真实页面检查通过。验证统一按钮、核心筛选、手动诊断、历史、版本、脱敏和移动端无横向溢出。
+- 外层 Compose、独立外部网络、非 root、只读运行、健康、备份与重启持久化复测通过。
+- Windows 集成测试修正 UDP 临时端口分配和 sing-box 多监听器就绪等待；不会用 TCP 临时端口猜测 UDP 可用性，也不会将 Clash 先就绪误判为全部 API 已就绪。
+- 所有进程/容器仅为隔离测试。未部署真实 VPS；宿主固定版本证据脚本只做 shell 语法检查，生产路径/挂载/加载配置仍须管理员实际验收。远端管理 API TLS 与长期生产资源监测未在本次验收。
 
 ## v1.3 Xray 架构纠偏验证
 

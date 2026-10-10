@@ -2,18 +2,18 @@ package collector
 
 import (
 	"context"
-	"traffic-manager-lite/internal/xraymonitor"
+	"traffic-manager-lite/internal/coremonitor"
 )
 
-func (s *Scheduler) Diagnose(ctx context.Context, id int64, trigger string) (xraymonitor.Report, error) {
+func (s *Scheduler) Diagnose(ctx context.Context, id int64, trigger string) (coremonitor.Report, error) {
 	s.mu.Lock()
 	if s.busy[id] {
 		s.mu.Unlock()
-		return xraymonitor.Report{}, ErrBusy
+		return coremonitor.Report{}, ErrBusy
 	}
 	if s.ctx.Err() != nil {
 		s.mu.Unlock()
-		return xraymonitor.Report{}, s.ctx.Err()
+		return coremonitor.Report{}, s.ctx.Err()
 	}
 	s.busy[id] = true
 	s.wg.Add(1)
@@ -23,10 +23,10 @@ func (s *Scheduler) Diagnose(ctx context.Context, id int64, trigger string) (xra
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
 	defer stop()
-	service := xraymonitor.Service{Store: s.Store, Config: s.Config}
+	service := coremonitor.Service{Store: s.Store, Config: s.Config}
 	instance, e := service.Instance(ctx, id)
 	if e != nil {
-		return xraymonitor.Report{}, e
+		return coremonitor.Report{}, e
 	}
 	return service.Observe(ctx, instance, true, trigger)
 }
