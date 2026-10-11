@@ -35,3 +35,5 @@ Xray/V2Fly 使用各自官方 StatsService protobuf；sing-box 只使用实际�
 版本 v1.4：真实 Hysteria2 4MiB 上传/下载与官方 TrafficLogger/copyTwoWayEx 确认 Upload=tx、Download=rx（核心面向 remote，不是客户端网卡收发）；旧 v1.3 反向映射已修正，固定方向 epoch 避免跨旧 cursor 错算。009 来源/粒度/原计数/Provider cursor、010 显式离线修复审计、011 独立连接快照；001–008 不变。sing-box 用户身份与 Online 按 inbound+name；原生连接差值同统计事务，不声明完整历史用户总量，实例流量与 Clash 不相加。配置用户 CRUD 只经可选 cmd/tml-core-agent，固定 host/container/config 映射、官方1.14.3 check、哈希并发检查、备份原子保存、确认重启/epoch健康、失败恢复；单文件 bind/merged config/其他版本写入保守拒绝。cmd/tml-traffic-audit 默认只读 Dry Run，仅有来源确认的旧 HY 实例可修复，未知/导入混合历史不自动交换。见 docs/v1.4.md。
 
 v1.4 来源证据补充：迁移012保留每次计数器观察（含基线/零增量）的来源、版本、配置hash、原值、方向和增量，30天后按日归档元数据证据；来源证据不能再次加入流量总计。旧provider未知游标升级后重新基线。历史修复拒绝选定范围中已纠正证据，原生用户raw累计是observed_connection_deltas虚拟账本，不冒充核心完整用户计数器。
+
+订阅修正（2026-10-11）：迁移013保留旧订阅user范围和Token，新增管理员明确授权的bundle跨实例节点集合，user_id为NULL。订阅只输出已保存的节点ID，不自动加入新资产；user模式仍检查归属。启用保存至少一个可用节点，运行时全部失效返回422，不返回成功空白。预览只返回数量/过滤原因，不能输出客户端凭据。前端默认bundle，支持多选/搜索/实例筛选/顺序/移除/检查。Mihomo proxies和sing-box outbounds为节点集合，不冒充完整路由配置；API地址不能当客户端地址。见docs/subscription-management.md。

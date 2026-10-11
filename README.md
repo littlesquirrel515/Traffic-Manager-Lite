@@ -4,6 +4,10 @@
 
 已实现采集、持久统计、30 天归档、配置发现、人工覆盖、三种订阅、后台登录与管理。**尚未接入你的真实 VPS 或生产核心；本地测试通过不等于生产流量或连通性验收。** 具体记录见 [验证报告](docs/verification.md)。
 
+## 订阅管理修正（2026-10-11）
+
+新订阅默认使用通用节点集合，可以跨服务器、实例和统计用户多选，支持搜索、实例筛选、批量选择、调整返回顺序和检查过滤原因。旧订阅保留单用户模式及原 Token。没有可用节点时不再返回成功的空白内容。升级自动执行迁移 013，说明及配置排查见 [订阅管理说明](docs/subscription-management.md)。
+
 ## v1.4：方向纠偏与原生观测
 
 真实 Hysteria2 上传/下载测试已确认 `/traffic tx=客户端上传、rx=客户端下载`，纠正旧版反向映射。默认不交换历史；提供只读 Dry Run、限定实例/截止时间/来源确认的离线修复工具，自动备份、同事务修复汇总及归档、审计与防重复交换。
@@ -93,7 +97,7 @@ docker compose logs --tail=100 traffic-manager-lite
 4. 为实例设置只读配置路径，在“代理节点”扫描。
 5. 补充客户端地址、真实连接端口、SNI/Host 等；服务端监听端口不会自动作为客户端端口。
 6. 如同一逻辑用户有多核心身份，在“用户流量 → 关联身份”合并归属。改显示名称不会改采集标识或 cursor。
-7. 创建订阅、选择属于该用户的节点，保存首次显示的订阅地址。
+7. 创建通用订阅，从所有实例多选所需节点，确认可输出数量并保存首次显示的订阅地址；需要限定凭据归属时选择单用户模式。
 
 项目不会修改代理配置、添加代理用户、重启任何代理核心。
 
@@ -150,7 +154,7 @@ Mihomo 输出 `proxies`、sing-box 输出 `outbounds`，用于导入客户端或
 
 独立 Hysteria2 的 password/userpass 静态认证可发现。HTTP/command 认证无法从静态配置推导客户端凭据，扫描明确返回限制。端口跳跃、obfs、ECH、插件、复杂 XHTTP、特殊 Shadowsocks 多用户加密等组合不在已验证输出范围；不要假设普通配置能连接这些服务。
 
-Token 随机 256 位、数据库仅存 SHA256；创建/轮换返回一次明文。禁用可撤销；格式与 Token 对应。选择节点及每次生成时均检查用户归属，身份转移后旧用户订阅不能输出新用户节点。
+Token 随机 256 位、数据库仅存 SHA256；创建/轮换返回一次明文。禁用可撤销；格式与 Token 对应。通用订阅仅输出管理员明确保存的节点集合，不自动加入新节点；单用户订阅在选择及每次生成时检查用户归属，身份转移后不能输出新用户节点。订阅地址授权访问所选节点的客户端凭据。后台预览仅返回数量和过滤原因。启用状态下保存要求至少一个可用节点；现有订阅运行时全部失效返回 HTTP 422，错误正文不含凭据。
 
 ## 环境变量与设置
 
@@ -222,6 +226,7 @@ TML_PLAYWRIGHT_MODULE=/path/to/playwright node scripts/e2e.cjs
 - `POST servers / instances / instances/{id}/collect / discovery/scan / subscriptions`
 - `PATCH instances/{id} / nodes/{id} / users/{id} / subscriptions/{id} / settings`
 - `POST users/{id}/identities / subscriptions/{id}/rotate / maintenance/archive / maintenance/backup`
+- `POST subscriptions/preview`：管理员检查节点范围、可输出数量及过滤原因，不返回配置凭据。
 - `GET traffic/summary / traffic/history`
 - 公开订阅 `GET /sub/{v2ray|mihomo|singbox}/{token}`
 

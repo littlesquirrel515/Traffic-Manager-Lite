@@ -11,3 +11,4 @@
 [hidden]{display:none!important}
 
 .settings-list > div{min-width:0;overflow-wrap:anywhere}.panel > p{overflow-wrap:anywhere}.toolbar button{max-width:100%;overflow-wrap:anywhere}
+.subscription-picker{min-width:0}.subscription-picker .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.subscription-picker .filters input{max-width:none}.subscription-picker .checklist{max-height:300px}.subscription-picker .checklist label{display:flex;align-items:flex-start;gap:8px;overflow-wrap:anywhere}.subscription-picker small{display:block}.subscription-warning{color:var(--red)}.subscription-order{display:flex;gap:6px;align-items:center;margin:8px 0}.subscription-order span{flex:1;min-width:0;overflow-wrap:anywhere}@media(max-width:767px){.subscription-picker .filters{grid-template-columns:1fr}}

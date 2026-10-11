@@ -103,7 +103,15 @@ func (a *API) Handler() http.Handler {
 		result(w, map[string]bool{"updated": e == nil}, e)
 	})
 	admin.HandleFunc("GET /api/v1/subscriptions", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, "SELECT id,name,format,user_id,enabled,created_at,updated_at,(SELECT json_group_array(node_id) FROM subscription_nodes WHERE subscription_id=s.id ORDER BY position) node_ids FROM subscriptions s ORDER BY id")
+		a.rows(w, r, "SELECT id,name,format,user_id,selection_scope,enabled,created_at,updated_at,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM subscription_nodes WHERE subscription_id=s.id ORDER BY position)) node_ids FROM subscriptions s ORDER BY id")
+	})
+	admin.HandleFunc("POST /api/v1/subscriptions/preview", func(w http.ResponseWriter, r *http.Request) {
+		var d subscription.Definition
+		if !body(w, r, &d) {
+			return
+		}
+		p, e := subscription.Preview(r.Context(), a.Store, d)
+		result(w, p, e)
 	})
 	admin.HandleFunc("POST /api/v1/subscriptions", a.saveSubscription)
 	admin.HandleFunc("PATCH /api/v1/subscriptions/{id}", a.saveSubscription)
@@ -354,10 +362,16 @@ func (a *API) scan(w http.ResponseWriter, r *http.Request) {
 func (a *API) output(w http.ResponseWriter, r *http.Request) {
 	b, ct, rejected, e := subscription.Output(r.Context(), a.Store, r.PathValue("format"), r.PathValue("token"))
 	if e != nil {
+		if errors.Is(e, subscription.ErrNoUsableNodes) {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, e.Error(), http.StatusUnprocessableEntity)
+			return
+		}
 		http.Error(w, "订阅不可用", 404)
 		return
 	}
 	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-TML-Filtered-Nodes", strconv.Itoa(len(rejected)))
 	w.Write(b)
 }
