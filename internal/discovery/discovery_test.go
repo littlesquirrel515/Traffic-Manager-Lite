@@ -26,6 +26,32 @@ func TestParserWhitelistAndNoAssumedClientPort(t *testing.T) {
 		t.Fatal("private key leaked")
 	}
 }
+func TestXrayMethodPrecedenceAndTransportAliases(t *testing.T) {
+	for _, tc := range []struct{ method, network, want string }{
+		{"xhttp", "tcp", "xhttp"}, {"splithttp", "", "xhttp"},
+		{"websocket", "", "ws"}, {"grpc", "", "grpc"},
+		{"raw", "", "tcp"}, {"httpupgrade", "", "httpupgrade"},
+		{"", "ws", "ws"}, {"", "", "tcp"},
+	} {
+		stream := map[string]any{"method": tc.method, "network": tc.network, "wsSettings": map[string]any{"path": "/ws"}, "grpcSettings": map[string]any{"serviceName": "service"}}
+		b, _ := json.Marshal(map[string]any{"inbounds": []any{map[string]any{"tag": "test", "protocol": "vless", "settings": map[string]any{"clients": []any{map[string]any{"email": "alice", "id": "uuid"}}}, "streamSettings": stream}}})
+		rows, e := Parse("xray", b)
+		if e != nil || len(rows) != 1 || rows[0].Profile.Transport != tc.want {
+			t.Fatalf("method=%q network=%q: %+v %v", tc.method, tc.network, rows, e)
+		}
+		if tc.want == "ws" && rows[0].Profile.Path != "/ws" {
+			t.Fatal("WS path lost")
+		}
+		if tc.want == "grpc" && rows[0].Profile.ServiceName != "service" {
+			t.Fatal("gRPC service lost")
+		}
+		// V2Fly retains its own network schema; Xray's method is not imported.
+		rows, e = Parse("v2fly", b)
+		if e != nil || len(rows) != 1 || rows[0].Profile.Transport != first(tc.network, "tcp") {
+			t.Fatal("Xray method changed V2Fly discovery", e)
+		}
+	}
+}
 func contains(a, b string) bool {
 	for i := 0; i+len(b) <= len(a); i++ {
 		if a[i:i+len(b)] == b {

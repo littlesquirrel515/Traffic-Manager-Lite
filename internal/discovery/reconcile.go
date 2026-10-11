@@ -15,7 +15,7 @@ import (
 	"traffic-manager-lite/internal/storage"
 )
 
-var OverrideFields = map[string]bool{"name": true, "address": true, "port": true, "sni": true, "host": true, "path": true, "service_name": true, "public_key": true, "short_id": true, "fingerprint": true, "flow": true, "sort": true, "enabled": true, "transport": true, "tls": true, "uuid": true, "password": true, "method": true}
+var OverrideFields = map[string]bool{"name": true, "address": true, "port": true, "sni": true, "host": true, "path": true, "service_name": true, "public_key": true, "short_id": true, "fingerprint": true, "flow": true, "sort": true, "enabled": true, "transport": true, "tls": true, "uuid": true, "password": true, "method": true, "xhttp_mode": true, "alpn": true}
 
 func Effective(p core.NodeProfile, over map[string]any) (core.NodeProfile, error) {
 	b, _ := json.Marshal(p)
@@ -33,6 +33,14 @@ func Effective(p core.NodeProfile, over map[string]any) (core.NodeProfile, error
 	}
 	if p.Port < 0 || p.Port > 65535 || len(p.Name) > 200 || len(p.Address) > 253 {
 		return p, fmt.Errorf("invalid node parameters")
+	}
+	if len(p.ALPN) > 8 {
+		return p, fmt.Errorf("too many ALPN protocols")
+	}
+	for _, protocol := range p.ALPN {
+		if protocol == "" || len(protocol) > 255 || strings.ContainsAny(protocol, ",\r\n") {
+			return p, fmt.Errorf("invalid ALPN protocol")
+		}
 	}
 	return p, nil
 }

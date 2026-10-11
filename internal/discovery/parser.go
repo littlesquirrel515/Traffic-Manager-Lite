@@ -123,6 +123,18 @@ func Parse(kind string, b []byte) ([]Discovered, error) {
 		} else {
 			stream := obj(in["streamSettings"])
 			p.Transport = first(str(stream, "network"), "tcp")
+			if kind == "xray" {
+				// Xray's method takes precedence over legacy network (v26.9.9).
+				p.Transport = strings.ToLower(first(str(stream, "method"), str(stream, "network"), "tcp"))
+				switch p.Transport {
+				case "raw":
+					p.Transport = "tcp"
+				case "websocket":
+					p.Transport = "ws"
+				case "splithttp":
+					p.Transport = "xhttp"
+				}
+			}
 			p.TLS = str(stream, "security") == "tls" || str(stream, "security") == "reality"
 			p.Reality = str(stream, "security") == "reality"
 			tls := obj(stream["tlsSettings"])
@@ -134,6 +146,21 @@ func Parse(kind string, b []byte) ([]Discovered, error) {
 			p.Path = str(ws, "path")
 			p.Host = str(obj(ws["headers"]), "Host")
 			p.ServiceName = str(obj(stream["grpcSettings"]), "serviceName")
+			if kind == "xray" && p.Transport == "xhttp" {
+				xh := obj(stream["xhttpSettings"])
+				if xh == nil {
+					xh = obj(stream["splithttpSettings"])
+				}
+				p.Path = str(xh, "path")
+				p.Host = str(xh, "host")
+				p.XHTTPMode = first(str(xh, "mode"), "auto")
+				for key := range xh {
+					if key != "path" && key != "host" && key != "mode" {
+						p.Limitations = append(p.Limitations, "XHTTP 扩展参数尚未验证，未输出")
+						break
+					}
+				}
+			}
 			r := obj(stream["realitySettings"])
 			p.PublicKey = publicKey(str(r, "privateKey"))
 			p.SNI = first(p.SNI, firstString(list(r, "serverNames")))

@@ -2,7 +2,7 @@
 
 个人 VPS 的轻量代理流量监控与订阅管理系统。Go 单体服务，SQLite WAL，中文响应式后台；生产环境只运行一个容器，无 Node.js、Redis、Docker Socket。
 
-已实现采集、持久统计、30 天归档、配置发现、人工覆盖、三种订阅、后台登录与管理。**尚未接入你的真实 VPS 或生产核心；本地测试通过不等于生产流量或连通性验收。** 具体记录见 [验证报告](docs/verification.md)。
+已实现采集、持久统计、30 天归档、配置发现、人工覆盖、三种订阅、后台登录与管理。已完成真实 VPS 的订阅修复及 XHTTP packet-up 实际连接验证；其他协议的完整连通性和长期负载仍需验收。具体记录见 [验证报告](docs/verification.md)。
 
 ## 订阅管理修正（2026-10-11）
 
@@ -148,7 +148,8 @@ UTC 高精度时间戳；默认聚合时区 Asia/Shanghai。时区写入数据�
 | Shadowsocks（无未配置插件/TLS） | 支持 | 支持 | 支持 |
 | Hysteria2 | 支持 | 支持 | 支持 |
 | AnyTLS | 保守过滤，URI 范围未验证 | 支持 | 支持 |
-| XHTTP / 其他未验证组合 | 明确过滤 | 明确过滤 | 明确过滤 |
+| 简单 VLESS + TLS + XHTTP | 支持 auto / packet-up / stream-up / stream-one | 明确过滤 | 明确过滤 |
+| 复杂 XHTTP / 其他未验证组合 | 明确过滤 | 明确过滤 | 明确过滤 |
 
 Mihomo 输出 `proxies`、sing-box 输出 `outbounds`，用于导入客户端或合并到用户自己的路由配置，不覆盖 DNS/路由规则。实际生成配置已通过官方 sing-box 1.14.0 `check` 和 Mihomo 1.19.32 `-t`；仍需实际节点连接验收。过滤原因可在节点后台查看，订阅响应头 `X-TML-Filtered-Nodes` 给出数量。
 

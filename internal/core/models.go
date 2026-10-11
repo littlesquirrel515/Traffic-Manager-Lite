@@ -92,6 +92,8 @@ type NodeProfile struct {
 	Password    string   `json:"password,omitempty"`
 	Method      string   `json:"method,omitempty"`
 	Transport   string   `json:"transport,omitempty"`
+	XHTTPMode   string   `json:"xhttp_mode,omitempty"`
+	ALPN        []string `json:"alpn,omitempty"`
 	TLS         bool     `json:"tls"`
 	Reality     bool     `json:"reality,omitempty"`
 	Limitations []string `json:"limitations,omitempty"`

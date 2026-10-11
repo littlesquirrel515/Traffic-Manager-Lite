@@ -6,7 +6,7 @@
 
 原界面按单一 `user_id` 筛选，后端也拒绝其他用户的节点。同一管理员的多个实例不一定映射到同一个统计用户，因此无法通过订阅组合所有实例的节点。
 
-原保存逻辑允许启用没有节点的订阅。生成器会过滤地址、端口、认证或安全参数不完整以及当前格式不兼容的节点；全部过滤后仍返回 HTTP 200。Base64 结果为空字符串，其他格式只有空列表，客户端可能显示为空白。本次修正这些已确认的代码路径，未读取生产 VPS 的数据库。
+原保存逻辑允许启用没有节点的订阅。生成器会过滤地址、端口、认证或安全参数不完整以及当前格式不兼容的节点；全部过滤后仍返回 HTTP 200。Base64 结果为空字符串，其他格式只有空列表，客户端可能显示为空白。初次修正已确认的代码路径后，本次进一步检查并修复真实 VPS 部署，详见下文。
 
 只接入核心统计 API 不等于获得可连接的客户端节点。API 通常不提供客户端域名、公网端口和完整认证配置。系统仍需扫描实例的只读配置，并在代理节点页面补充客户端连接参数，不能用 API 端口或容器内部监听地址替代。
 
@@ -45,4 +45,14 @@ Mihomo 和 sing-box 输出节点集合，不包含自动接管流量的本地监
 - `internal/subscription/bundle_test.go`、`internal/httpapi/subscriptions_test.go`、`internal/storage/subscription_migration_test.go`、`scripts/e2e.cjs`：功能与回归验证。
 - `internal/storage/traffic_test.go`：重启测试只读取 SQLite main 数据库路径，避免迁移创建的 temp 数据库空路径误报。
 
-升级只需要构建并重启管理服务，启动自动执行迁移 013。使用现有部署的数据库备份流程保留升级前备份，无需重启代理核心。客户端实际连接及生产参数仍需在 VPS 上验证。测试记录见 [verification.md](verification.md)。
+升级只需要构建并重启管理服务，启动自动执行迁移 013。使用现有部署的数据库备份流程保留升级前备份，无需重启代理核心。测试记录见 [verification.md](verification.md)。
+
+## 真实部署修正（2026-10-11）
+
+部署初始有三个订阅，但没有配置路径、发现节点或节点选择。管理容器增加三种核心配置目录的只读挂载，再保存实例配置路径并扫描，发现 11 个节点。配置中的监听端口只作参考；订阅填写客户端实际连接端口。通过 Cloudflare 源站规则按路径转发时，客户端端口可统一为 443，不能直接填写各个源站端口。
+
+新版 Xray 的 `streamSettings.method` 优先于旧 `network`；解析器现已识别 `raw`、`websocket`、`splithttp` 别名并保留传输路径。依据 [Xray v26.9.9 官方源码](https://github.com/XTLS/Xray-core/blob/v26.9.9/infra/conf/transport_internet.go)，不将这些字段套用至 V2Fly。
+
+简单 VLESS/TLS/XHTTP 可生成 v2ray 分享链接，保留连接地址、443 端口、SNI、HTTP Host、path、mode、fingerprint 和 ALPN。四种基础模式通过官方 Xray 配置检查；packet-up 使用实际域名及 Cloudflare 路径转发完成代理请求。链接字段参照 [v2rayN 官方解析器](https://github.com/2dust/v2rayN/blob/master/v2rayN/ServiceLib/Handler/Fmt/BaseFmt.cs)。Mihomo/sing-box 输出仍过滤 XHTTP；包含 `extra` 等扩展参数的配置也继续过滤，避免生成缺失关键参数的节点。
+
+本次修改 `internal/core/models.go`、`internal/discovery/parser.go`、`reconcile.go`、`internal/subscription/generator.go` 和 `web/app.js`，增加 XHTTP 模式及 ALPN 编辑、验证与生成。参数仍保存在节点 JSON 中，无需新 SQL 迁移。新增及更新解析、生成和官方客户端检查测试。原有流量采集及归档逻辑未修改。

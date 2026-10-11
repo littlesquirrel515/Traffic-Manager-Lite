@@ -29,7 +29,23 @@ func Compatible(format string, p core.NodeProfile) string {
 	if p.Protocol != "vless" && p.Protocol != "vmess" && p.Protocol != "trojan" && p.Protocol != "shadowsocks" && p.Protocol != "hysteria2" && p.Protocol != "anytls" {
 		return "不支持的协议"
 	}
-	if p.Transport != "" && p.Transport != "tcp" && p.Transport != "ws" && p.Transport != "grpc" {
+	if p.Transport == "xhttp" {
+		if format != "v2ray" {
+			return "当前客户端生成器不支持 XHTTP，未输出"
+		}
+		if p.Protocol != "vless" || !p.TLS || p.Reality || p.PublicKey != "" {
+			return "目前仅支持简单 VLESS + TLS + XHTTP 分享链接"
+		}
+		if !strings.HasPrefix(p.Path, "/") {
+			return "XHTTP 缺少有效路径"
+		}
+		switch p.XHTTPMode {
+		case "", "auto", "packet-up", "stream-up", "stream-one":
+		default:
+			return "XHTTP 模式未验证，未输出"
+		}
+	}
+	if p.Transport != "" && p.Transport != "tcp" && p.Transport != "ws" && p.Transport != "grpc" && p.Transport != "xhttp" {
 		return "当前生成器未验证 " + p.Transport + " 组合（含 XHTTP），已过滤"
 	}
 	if (p.Protocol == "hysteria2" || p.Protocol == "anytls" || p.Protocol == "shadowsocks") && p.Transport != "" && p.Transport != "tcp" {
@@ -140,6 +156,19 @@ func share(p core.NodeProfile) string {
 	if p.SNI != "" {
 		q.Set("sni", p.SNI)
 	}
+	if p.TLS && p.Fingerprint != "" {
+		q.Set("fp", p.Fingerprint)
+	}
+	if p.TLS && len(p.ALPN) > 0 {
+		q.Set("alpn", strings.Join(p.ALPN, ","))
+	}
+	if p.Transport == "xhttp" {
+		q.Set("path", p.Path)
+		if p.Host != "" {
+			q.Set("host", p.Host)
+		}
+		q.Set("mode", first(p.XHTTPMode, "auto"))
+	}
 	if p.Transport == "ws" {
 		q.Set("path", p.Path)
 		if p.Host != "" {
@@ -184,6 +213,12 @@ func mihomo(p core.NodeProfile) map[string]any {
 		m["tls"] = true
 		m["servername"] = p.SNI
 		m["sni"] = p.SNI
+		if len(p.ALPN) > 0 {
+			m["alpn"] = p.ALPN
+		}
+		if p.Fingerprint != "" {
+			m["client-fingerprint"] = p.Fingerprint
+		}
 	}
 	if p.PublicKey != "" {
 		m["reality-opts"] = map[string]any{"public-key": p.PublicKey, "short-id": p.ShortID}
@@ -222,6 +257,12 @@ func singbox(p core.NodeProfile) map[string]any {
 	}
 	if p.TLS {
 		tls := map[string]any{"enabled": true, "server_name": p.SNI}
+		if len(p.ALPN) > 0 {
+			tls["alpn"] = p.ALPN
+		}
+		if p.Fingerprint != "" {
+			tls["utls"] = map[string]any{"enabled": true, "fingerprint": p.Fingerprint}
+		}
 		if p.PublicKey != "" {
 			tls["reality"] = map[string]any{"enabled": true, "public_key": p.PublicKey, "short_id": p.ShortID}
 			tls["utls"] = map[string]any{"enabled": true, "fingerprint": first(p.Fingerprint, "chrome")}

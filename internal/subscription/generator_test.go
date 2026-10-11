@@ -82,6 +82,7 @@ func TestWSRealityAndFiltering(t *testing.T) {
 			t.Fatal("transport/security omitted")
 		}
 		bad := node("vless", "xhttp")
+		bad.Profile.XHTTPMode = "unverified-mode"
 		_, _, rejected, e = Generate(format, []core.Node{bad})
 		if e != nil || len(rejected) != 1 {
 			t.Fatal("unsupported XHTTP not filtered")

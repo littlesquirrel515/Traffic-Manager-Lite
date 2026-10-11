@@ -127,3 +127,16 @@
 `dist/traffic-manager-lite.exe`（Windows）、`dist/traffic-manager-lite`（Linux amd64）、`dist/ui-verification/`（浏览器截图）。dist 和 .tools 被 Git 忽略。包含夹具数据的截图名称含 `fixture`，不代表生产使用量。
 
 版本依赖由 go.mod/go.sum 固定。所有 generated protobuf 已入源码，生产构建无需 protoc 或完整代理核心 Go 依赖。
+
+## 真实 VPS 订阅修复（2026-10-11）
+
+此前各节的生产未验证说明为阶段记录；本节记录本次现场修复。
+
+- 修复前已有三个订阅，但节点及订阅节点集合均为空。增加 Xray/Hysteria2/sing-box 配置目录只读挂载，保存实例路径并扫描出 11 个节点；未挂载 Docker Socket。
+- 已备份数据库、外层 Compose 和环境文件并保留旧镜像。只重建管理服务，未修改或重启生产代理核心，也未修改 Nginx。API Secret 和客户端凭据不写入本报告。
+- 纠正新版 Xray method 优先级及传输别名，支持简单 VLESS/TLS/XHTTP 分享链接；扩展参数未验证时明确拒绝。后台增加 XHTTP 模式和 ALPN 字段。无需新 SQL 迁移。
+- go test ./...、go vet ./...、Windows 构建、JavaScript 语法检查通过。浏览器夹具验收通过：跨实例多选、顺序、过滤、三种输出、阻止空订阅、Token 旋转及 24 个页面/尺寸检查，无浏览器错误。
+- 官方 sing-box/Mihomo 配置验证通过；官方 Xray 四种基础 XHTTP 模式配置验证通过。包含额外 XHTTP 参数的发现配置仍拒绝生成，避免丢弃扩展配置。
+- 使用 VPS 实际 Xray v26.9.9、真实客户端参数及隔离临时 SOCKS 客户端，经 Cloudflare 的 443 和路径源站规则，以 packet-up 成功代理请求 HTTPS 健康接口并返回状态 ok；临时容器及配置已清理。其他模式只验证配置可解析，未宣称全协议实际连接已通过。
+- 公网订阅响应及原 Token 保留情况以现场复测为准。长期资源监测、所有协议连接、sing-box 的公网防火墙连通性仍需后续验收；夹具数据不代表生产流量。
+- 最终现场复测：三个原订阅均有一个可输出节点，原 Token 哈希与升级前备份一致。三个通用订阅选择全部 11 个节点，v2ray 返回 9 个、Mihomo/sing-box 各返回 7 个，公网均 HTTP 200，Cache-Control 为 private, no-store。实际 sing-box 输出通过 v1.14.3 官方 check。差额由格式兼容性过滤，未输出虚构节点。
