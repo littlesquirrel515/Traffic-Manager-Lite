@@ -65,7 +65,7 @@ func TestAPIAuthenticationHealthAndCRUD(t *testing.T) {
 	if r := call(t, h, "GET", "/api/v1/instances", nil, true); r.Code != 200 || strings.Contains(r.Body.String(), "never-expose") {
 		t.Fatal("secret leaked")
 	}
-	for _, path := range []string{"dashboard", "users", "online", "nodes", "subscriptions", "settings", "identities", "traffic/summary?range=month", "traffic/history?range=last_month"} {
+	for _, path := range []string{"dashboard", "users", "online", "catalog/nodes", "catalog/subscriptions", "settings", "identities", "traffic/summary?range=month", "traffic/history?range=last_month"} {
 		if r := call(t, h, "GET", "/api/v1/"+path, nil, true); r.Code != 200 {
 			t.Fatalf("%s %d %s", path, r.Code, r.Body.String())
 		}
@@ -75,6 +75,26 @@ func TestAPIAuthenticationHealthAndCRUD(t *testing.T) {
 	}
 	if r := call(t, h, "PATCH", "/api/v1/settings", map[string]any{"collect_interval": "2s", "active_window": "60s", "log_level": "warn", "archive_enabled": true}, true); r.Code != 200 {
 		t.Fatal(r.Body.String())
+	}
+}
+
+func TestHysteriaDockerEndpointNormalizationKeepsTargetValidation(t *testing.T) {
+	a, h := testAPI(t)
+	call(t, h, "POST", "/api/v1/servers", map[string]any{"name": "fixture", "enabled": true}, true)
+	for _, endpoint := range []string{"hysteria2:9999", " https://hysteria2:9999 ", "[::1]:9999"} {
+		r := call(t, h, "POST", "/api/v1/instances", map[string]any{"name": "fixture", "server_id": 1, "core_type": "hysteria2", "api_endpoint": endpoint, "enabled": true}, true)
+		if r.Code != 200 {
+			t.Fatalf("valid endpoint rejected: %s", r.Body.String())
+		}
+	}
+	var endpoint string
+	if e := a.Store.DB.QueryRow("SELECT api_endpoint FROM instances WHERE id=1").Scan(&endpoint); e != nil || endpoint != "http://hysteria2:9999" {
+		t.Fatal("HTTP scheme was not persisted")
+	}
+	for _, endpoint := range []string{"ftp://hysteria2:9999", "http://user:secret@hysteria2:9999", "169.254.169.254:80", "hysteria2:9999?clear=1", "hysteria2:9999#fragment", "hysteria2:0"} {
+		if r := call(t, h, "POST", "/api/v1/instances", map[string]any{"name": "fixture", "server_id": 1, "core_type": "hysteria2", "api_endpoint": endpoint, "enabled": true}, true); r.Code == 200 {
+			t.Fatal("unsafe endpoint accepted")
+		}
 	}
 }
 func TestOnlineStaleIsNotOffline(t *testing.T) {

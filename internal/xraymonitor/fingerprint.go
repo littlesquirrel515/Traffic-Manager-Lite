@@ -67,3 +67,9 @@ func fingerprint(key []byte, protocol, credential, flow string) string {
 	mac.Write([]byte(protocol + "\x00" + credential + "\x00" + flow))
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// CredentialFingerprint is shared with subscription resolution. It does not
+// load a secret or return raw authentication data.
+func CredentialFingerprint(key []byte, protocol, credential, flow string) string {
+	return fingerprint(key, protocol, credential, flow)
+}

@@ -29,6 +29,11 @@ func Open(path, timezone string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(e error) (*Store, error) { db.Close(); return nil, e }
+	// Inspect before changing journal mode, creating migration tables, or writing
+	// settings. A v1/foreign database must remain byte-for-byte untouched.
+	if err = validateBaseline(db); err != nil {
+		return fail(err)
+	}
 	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000", "PRAGMA synchronous=FULL", "CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"} {
 		if _, err = db.Exec(q); err != nil {
 			return fail(err)
@@ -54,6 +59,13 @@ func Open(path, timezone string) (*Store, error) {
 		}
 		if _, e = tx.Exec(string(b)); e == nil {
 			_, e = tx.Exec("INSERT INTO schema_migrations VALUES(?,?)", f.Name(), Stamp(time.Now()))
+		}
+		if e == nil {
+			var digest string
+			digest, e = baselineDigest()
+			if e == nil {
+				_, e = tx.Exec("INSERT INTO settings(key,value) VALUES('baseline_schema_sha256',?) ON CONFLICT(key) DO NOTHING", digest)
+			}
 		}
 		if e != nil {
 			tx.Rollback()

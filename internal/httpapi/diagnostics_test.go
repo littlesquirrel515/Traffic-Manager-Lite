@@ -16,7 +16,7 @@ func TestDiagnosticRoutesAreProtectedAndKeepAssetsOnFailure(t *testing.T) {
 	a.Store.DB.Exec("INSERT INTO servers(id,name,address,created_at,updated_at) VALUES(1,'test','localhost',?,?)", now, now)
 	a.Store.DB.Exec("INSERT INTO instances(id,server_id,name,core_type,api_endpoint,created_at,updated_at) VALUES(1,1,'test','xray','localhost:1',?,?)", now, now)
 	a.Store.DB.Exec("INSERT INTO xray_clients(instance_id,inbound_tag,asset_key,email,protocol,level,source,present,observed_at) VALUES(1,'in','email:alice','alice','vless',0,'runtime_api',1,?)", now)
-	for _, route := range []string{"xray/diagnostics", "instances/1/diagnostics", "instances/1/diagnostics/history", "instances/1/health", "instances/1/clients"} {
+	for _, route := range []string{"cores/diagnostics", "instances/1/diagnostics", "instances/1/diagnostics/history", "instances/1/health", "instances/1/clients"} {
 		if r := call(t, h, "GET", "/api/v1/"+route, nil, false); r.Code != 401 {
 			t.Fatal("diagnostic exposed", route, r.Code)
 		}
@@ -29,7 +29,7 @@ func TestDiagnosticRoutesAreProtectedAndKeepAssetsOnFailure(t *testing.T) {
 	if json.Unmarshal(r.Body.Bytes(), &report) != nil || report["version"] != "Unknown" {
 		t.Fatal("invented version")
 	}
-	for _, route := range []string{"xray/diagnostics", "instances/1/diagnostics", "instances/1/diagnostics/history", "instances/1/health", "instances/1/clients"} {
+	for _, route := range []string{"cores/diagnostics", "instances/1/diagnostics", "instances/1/diagnostics/history", "instances/1/health", "instances/1/clients"} {
 		if r := call(t, h, "GET", "/api/v1/"+route, nil, true); r.Code != 200 {
 			t.Fatal(route, r.Body.String())
 		}

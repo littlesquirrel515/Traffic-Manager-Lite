@@ -29,7 +29,7 @@ func (m *Manager) Handler(token string) http.Handler {
 			result, e = m.Read(ctx, id)
 		} else if r.Method == "POST" {
 			var req Request
-			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
 			decoder.DisallowUnknownFields()
 			if decoder.Decode(&req) != nil {
 				http.Error(w, "invalid request", 400)

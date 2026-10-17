@@ -1,3 +1,5 @@
+> 当前 v2.0 验收见 [v2-verification.md](v2-verification.md)。以下为历史 v1 记录，不能将其旧迁移/兼容说明用于 v2；生产尚未执行 v2 清库切换。
+
 # 验证记录
 
 更新日期：2026-10-11（Asia/Shanghai）。各节记录对应版本的验证。本记录区别开发验证与生产验收。
@@ -140,3 +142,70 @@
 - 使用 VPS 实际 Xray v26.9.9、真实客户端参数及隔离临时 SOCKS 客户端，经 Cloudflare 的 443 和路径源站规则，以 packet-up 成功代理请求 HTTPS 健康接口并返回状态 ok；临时容器及配置已清理。其他模式只验证配置可解析，未宣称全协议实际连接已通过。
 - 公网订阅响应及原 Token 保留情况以现场复测为准。长期资源监测、所有协议连接、sing-box 的公网防火墙连通性仍需后续验收；夹具数据不代表生产流量。
 - 最终现场复测：三个原订阅均有一个可输出节点，原 Token 哈希与升级前备份一致。三个通用订阅选择全部 11 个节点，v2ray 返回 9 个、Mihomo/sing-box 各返回 7 个，公网均 HTTP 200，Cache-Control 为 private, no-store。实际 sing-box 输出通过 v1.14.3 官方 check。差额由格式兼容性过滤，未输出虚构节点。
+
+## Node Catalog & Subscription v1.0（2026-10-12）
+
+- 新增迁移 014；历史库迁移测试确认旧 Token/节点 ID/人工覆盖保留，UUID/密码移至独立认证来源，外键一致。统计迁移 001–013 未修改。
+- go test ./...、go vet ./...、Windows 构建及 JavaScript 语法检查通过。新增回归覆盖不同 Subscriber 共用节点而认证隔离、来源删除、完整运行资产移除、Stats/Online 缺失、协议覆盖拒绝、相同入站新增不能冒充改名、三态覆盖、共享入口引用保护、Token 旋转/到期/禁用、动态组去重、新旧公开路由限流及脱敏审计。
+- sing-box 1.14.3 和 Mihomo 1.19.32 的官方配置检查通过：集合模板、完整模板分别验证。隔离 Mihomo 核心的 controller 实际返回节点选择组及成员；不修改用户当前 Clash 配置和系统代理。
+- 浏览器使用临时数据库和 HTTP 夹具：42 个页面/尺寸检查、新节点复制/共享入口、Subscriber 绑定、多选与过滤、分组排序、脱敏预览、确认完整导出、旧订阅回归、移动端及暗色主题通过，无浏览器错误。
+- 本轮未重新执行 Linux race 或全协议生产连通测试；历史阶段的结果不作为本轮的新验证。配置检查不证明公网连通，复杂 XHTTP/AnyTLS 分享 URI/插件等组合继续按兼容规则过滤。
+- 真实 VPS 已部署新管理服务并完成迁移：健康检查正常，SQLite integrity_check/foreign_key_check 通过；只读根文件系统保留，未挂载 Docker Socket。Xray/Hysteria2/sing-box、另一个 Reality 实例及 Nginx 的启动时间与备份完全一致。
+- 线上发现 10 个 Inbound、11 个全局 Node、11 份独立认证来源。6 个旧订阅的 Token 哈希与升级前一致，旧格式预览仍分别输出 1/1/1/9/7/7 个节点。没有自动创建 Subscriber 或替管理员改变授权。
+- 用户电脑已有的 Mihomo 公网订阅地址返回 HTTP 200：7 个 proxies、1 个 proxy-group、6 条 rules，Cache-Control 为 private,no-store；实际响应通过官方 Mihomo 1.19.32 配置检查。这里只验证订阅和客户端配置，未宣称每个代理节点均已实际连通。
+- 升级备份位于 VPS `/data/traffic-manager-lite/backups/catalog-deployment-20261011-170159`，数据库备份为 `/data/traffic-manager-lite/backups/traffic-20261011-170159.108606469.db`。路径时间来自服务器 UTC 命名；本次验收日期按 Asia/Shanghai 为 2026-10-12。回滚必须匹配数据库、Compose 和备份镜像。
+
+
+## 配置调和与稳定身份 v1.1（2026-10-13，本轮）
+
+- 新增迁移015，001–014保持原样；升级测试保留兼容Node/凭据/订阅Token及原人工覆盖。稳定ID支持唯一改名、结构变更review、歧义pending、整组Tag交换人工确认、不同实例隔离、来源消失保留、退役重复身份释放Tag槽位。
+- 托管/adopted认证AES-256-GCM加密，显式确认才保存Desired；修订/代次冲突拒绝应用；文件回滚不删除Desired；中断应用可根据精确宿主证据验证或经再次确认恢复待重启步骤。
+- Base/Effective分离回归：实例配置发现读取Effective，策略独立读取Base，托管凭据进入配置观察供订阅绑定；应用后不会因Base仍无托管用户而反复重启。完整凭据观察库仍按原私有SQLite机制保存，不宣称所有历史认证已经加密。
+- go test ./...、go vet ./...、Windows构建通过。新增验收覆盖事务批量入口、共享影响、不同Endpoint保留、节点去重预览修订、引用迁移、入站合并/复现、默认管理员鉴权与策略保护、加密key/错误key、代次恢复。浏览器54个页面/尺寸及入口复制/批量、托管adopt/只读计划流程通过，无浏览器错误；使用临时DB和HTTP夹具。
+- sing-box1.14.3与Mihomo1.19.32官方配置校验（集合及完整模板）和Mihomo真实选择组controller检查通过。
+- 在VPS隔离测试容器验证：sing-box1.14.3三种入站用户CRUD、官方check、真实重启epoch、实际启动失败及恢复（37.71s）；Xray26.9.9持久Overlay、官方test、Handler账号核对、加密备份及真实回滚（3.18s）；原生Hysteria2.13.0仅userpass补丁、非认证字段不变、真实重启epoch、只读Traffic API健康及回滚（3.22s）。测试容器自动清理，未用生产代理进行写入测试。
+- Docker现场测试纠正旧sing-box二进制路径写死问题；现在通过固定程序名调用，不接受用户命令。首次测试私有fixture文件与容器UID不一致导致只读拒绝，改为匹配文件所有者运行隔离测试后通过，未放宽文件权限。
+- 新功能不声称Xray已支持热AddUser；默认文件持久化并确认重启。Hysteria2官方无离线check，非认证参数补丁拒绝；HTTP/command/password模式不做多用户托管。管理健康/配置校验不等于真实客户端代理连通；本轮未重新跑全部协议公网连通。
+
+- 本轮升级前备份：VPS `/data/traffic-manager-lite/backups/reconciliation-deployment-20261012-171604`，数据库 `/data/traffic-manager-lite/backups/traffic-20261012-171604.882521489.db`；保存6个旧订阅Token哈希、全局入站/节点/凭据ID及5个生产服务启动时间。目录名使用服务器UTC，本轮用户日期为2026-10-13。
+
+- 最后补充回归通过：应用后立即更新订阅认证观察，回滚立即过滤已经移除的认证；adopted用户连续两次认证轮换保留原Base所有权证据。单独Base/Effective生成文件不会循环重启。
+
+- 最终源码在VPS Go1.27.1 Alpine测试镜像中执行 `CGO_ENABLED=1 go test -race ./...`、`go vet ./...` 和三个工具的Linux编译通过。首次Docker test阶段也通过；因VPS磁盘较小，最终检查复用已有测试镜像并只打包项目Dockerfile的运行阶段，临时测试镜像/构建缓存在验收后清理，未删除旧部署回滚镜像。
+- 已部署生产TML并执行迁移015一次：健康、SQLite integrity_check/foreign_key_check通过，根文件系统只读、无Docker Socket；现有13个Inbound、14个Node、14份配置认证来源及旧Token/ID均保留。代理核心及Nginx五个服务的StartedAt与升级前完全一致，历史用户/身份/小时/日记录没有减少。新Desired数量为0，宿主代理未启用，默认Observe。
+- 6个旧订阅预览可用数为1/1/1/7/4/4。在隔离旧镜像及升级前数据库中复测得到相同结果，确认没有因本轮升级减少。用户现有Mihomo公网订阅HTTP200，4个proxies、1个选择组、6条rules，private,no-store；响应通过Mihomo1.19.32官方配置校验。此项不证明所有节点实际代理连通。
+
+## 全局节点编辑修正（2026-10-13）
+
+- 修正继承字段可以输入但提交被忽略的问题：用户修改连接字段自动切换为set，显式inherit/clear保持原语义，不修改共享Endpoint或核心配置。
+- `node --check web/catalog.js`、`node --check scripts/e2e.cjs`、Windows/Linux构建通过；浏览器54页面/尺寸检查通过。新增真实表单回归覆盖地址/端口/SNI/Host直接编辑、PATCH后读取、配置同步后保留、重新打开值保留，以及显式改回inherit恢复Endpoint值。
+- 已部署TML；健康、DB完整性、原Token/节点ID/统计和代理StartedAt核验通过；公网Mihomo订阅及官方配置校验通过。无需新迁移。旧镜像保留为 `traffic-manager-lite:before-node-editor-20261012-181003`，仅重建管理服务。
+
+## Subscriber 配额与 VLESS XHTTP（2026-10-13）
+
+- 审计发现：Subscriber/核心Client已经分离，但原Subscriber没有配额字段，订阅未返回subscription-userinfo；旧Mihomo兼容检查无条件拒绝XHTTP且Renderer缺少xhttp-opts。迁移016在现有Subscriber扩展策略，001–015不变，不另造流量账本。
+- 全量 `go test ./...`、`go vet ./...`、Windows/Linux编译及JS语法检查通过。覆盖10GiB/三日历月（月末/闰年）、1GiB上传+2GiB下载、增加额度/延长时间不改Token或消耗、反复拉取不延长、修订冲突、周期重置不删事实、重复Email跨入站去重、解绑冻结/重绑跳过暂停流量、部分/未知/过期/耗尽、旧订阅凭据归属与撤销、旧用户015→016迁移及重复启动保留旧Token/独立明确到期时间。
+- Linux隔离Alpine Go1.27.1容器的 `CGO_ENABLED=1 go test -race ./internal/subscription ./internal/httpapi ./internal/storage` 通过（27.76s/40.01s/76.83s）。最后补充的敏感header清理与旧订阅关联后解绑拒绝通过本地全量测试和vet，未宣称重新执行Linux全仓race。临时容器及SDK镜像标签清理，回滚镜像/数据库保留。
+- 浏览器临时DB/HTTP夹具54个页面/尺寸（360/768/1440）检查通过，无浏览器错误；配额默认值、修改、周期确认、审计、节点编辑继承覆盖、原管理流程保持。没有将夹具流量当作生产流量。
+- sing-box1.14.3/Mihomo1.19.32集合和完整模板的官方配置检查通过；Mihomo真实controller选择组检查通过。TLS与REALITY分别覆盖auto/stream-one/stream-up/packet-up，共8种XHTTP组合，解析YAML核验结构和具体字段并实际执行官方 `-t`。未知extra/敏感headers只限制对应格式，不伪造可用。
+- 已备份并部署TML，迁移016只执行一次；health/integrity_check/foreign_key_check通过。13个Inbound、14个Node、14份凭据、1个旧Subscriber及6个旧Token保留；升级时统计事实行数未减少。Xray、Hysteria2、sing-box、Reality及Nginx五服务StartedAt不变，管理容器根只读、无Docker Socket，默认Observe且宿主代理未启用。
+- 备份目录 `/data/traffic-manager-lite/backups/quota-deployment-20261013-084652`；一致数据库 `/data/traffic-manager-lite/backups/traffic-20261013-084652.249493197.db`；回滚镜像 `traffic-manager-lite:before-quota-20261013-084652`。源码、外层.env/Compose和脱敏验证清单保存在该目录，回退需匹配015数据库与旧镜像。
+- 用户保存的公网Mihomo订阅HTTP200，7个proxies、1个组、6条rules，通过Mihomo1.19.32官方配置检查；其中3个XHTTP恢复输出。隔离本机Mihomo使用该真实订阅packet-up节点请求 `https://www.gstatic.com/generate_204`，curl退出0、HTTP204，未改用户Clash配置/系统代理或生产核心。
+- 公开响应头的上传/下载/total/Unix expire、刷新即时更新与所有UA行为通过API测试；Clash Verge Rev2.5.8官方源码核对其元数据解析及非2xx错误处理。未实际操作Clash GUI导入配额测试订阅，未实测其错误提示/缓存展示；不能将源码和HTTP测试等同于GUI验收。真实连接只验证上述packet-up，不宣称所有协议/模式均公网连通。
+- 现有testuser001有4个凭据绑定，为migration_review且统计partial；2个Catalog订阅、6个旧订阅均没有被擅自赋予新限额。旧公网地址仍legacy_unassigned、不虚构标准配额头；管理员需确认旧用户策略并通过“关联统一配额用户”关联已授权凭据，原Token保留。部分统计的已知下界不是精确剩余；需要严格交付可选require_complete。额度限制只拒绝后续订阅更新，不自动断开已有连接。
+
+## 入站中心节点与连接入口 v1.2（2026-10-14）
+
+- 新增迁移017，001–016不改；稳定Binding、Node变体、入口元数据与验证/审计复用原业务实体。普通Node编辑拒绝变更入站，明确迁移保留ID/分组/订阅并暂停发布，不迁移核心凭据或流量。
+- 全量 `go test ./...`、`go vet ./...` 和Windows/Linux构建通过；回归覆盖创建原子性、重复请求/模板绑定幂等、IP/域名/端口/覆盖校验、三入口共享一个认证及计费来源、共享模板跨WS/XHTTP、Tag改名、监听变更保留公网端口并暂停、来源缺失/退役、显式节点迁移及授权保护、跨协议确认后旧授权暂停/新认证重新绑定。旧未初始化配额来源在替换/暂停前保存历史基线，冻结消耗，不激活新策略。
+- 016→017升级及重复启动测试保留合法多变体、Node ID、节点备注/人工覆盖/排序、分组顺序、Subscription Token、Subscriber配额、凭据及历史流量。SQL外键一致。现有源码包的采集、归档、用户CRUD及配置调和单元/API测试持续通过。
+- 浏览器使用临时数据库和HTTP夹具：60个页面/尺寸（360/768/1440）及原全流程通过。新流程实际点击入站详情、预选来源、动态参数/实时预览、入口页搜索/服务器/协议筛选、手机保存、编辑共享定义、独立复制、跨入站复用、三个入口一份凭据授权，无浏览器错误。不是生产真实流量。
+- sing-box1.14.3/Mihomo1.19.32集合及完整模板官方配置检查通过；Mihomo真实controller选择组检查和TLS/REALITY四种XHTTP模式共8组合官方-t通过。此项验证配置，不宣称全模式公网连通。
+- VPS隔离Alpine Go1.27.1运行 `CGO_ENABLED=1 go test -race ./internal/catalog ./internal/discovery ./internal/inboundconfig ./internal/subscription ./internal/httpapi ./internal/storage` 通过，分别41.27s/12.81s/1.02s/38.80s/67.49s/99.48s；最后增加旧订阅引用删除保护和跨协议暂停旧交付的SQL保护后，本地全量测试/vet继续通过，未重复声明最终代码完整Linux全仓race。
+- 部署前一致备份 `/data/traffic-manager-lite/backups/inbound-deployment-20261014-151701`；SQLite `/data/traffic-manager-lite/backups/traffic-20261014-151701.265540208.db`；旧镜像 `traffic-manager-lite:before-inbound-20261014-151701`。保存源码、外层.env/Compose、原Token/节点/分组/配额/凭据及5个代理/Nginx服务StartedAt。
+- 在备份的独立临时副本执行离线017迁移：16个原Node保留，生成14个Binding，unresolved=0；17张受保护的订阅/用户/凭据/分组/游标/小时/日及归档表的逐行摘要前后完全相同。无生产DB写入，无代理API调用。后续现场部署核验另行记录。
+
+- 已部署最终TML运行镜像并应用017一次：健康与SQLite完整性/外键通过；13个Inbound、16个原Node、14份真实凭据、1个旧Subscriber及14个Binding保留。旧Token、Node连接字段、分组/分配、凭据授权及配额修订逐项与备份一致，统计明细/汇总没有减少。根文件系统只读、无Docker Socket；默认Observe/宿主代理未启用；5个生产代理与Nginx StartedAt完全不变。
+- 现场使用本地交叉编译的三个Linux工具，按项目Dockerfile相同的Alpine运行阶段构建；未冒充重新执行完整Docker builder阶段。隔离race容器已自动清理，SDK镜像标签清理，升级前数据库/源码和旧镜像保留。
+- 原6个订阅预览可用数1/1/1/7/7/4；用户电脑已有公网Mihomo地址HTTP200、7个proxies、1个选择组、6条rules，含3个XHTTP，通过Mihomo1.19.32官方配置检查。隔离本机Mihomo再次使用该真实packet-up节点访问gstatic/generate_204：curl退出0/HTTP204；未改用户Clash配置或系统代理，未声称全模式全协议连通。
+- 管理员需处理Source Missing/Unresolved、实际Docker/Nginx转发确认及有托管Desired的跨协议变更。本次现场离线报告unresolved=0，没有自动合并变体、接管用户、初始化旧配额或改变旧订阅授权。旧订阅仍使用兼容显式分配；新入口可在新的Subscriber订阅中选择，不自动加入任何原Token。

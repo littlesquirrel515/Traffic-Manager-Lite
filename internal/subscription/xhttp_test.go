@@ -50,7 +50,7 @@ func TestSimpleXHTTPSharePreservesConnectionParameters(t *testing.T) {
 				t.Fatalf("%s=%q, want %q", k, got, want)
 			}
 		}
-		for _, format := range []string{"mihomo", "singbox"} {
+		for _, format := range []string{"singbox"} {
 			if _, _, r, e = Generate(format, []core.Node{n}); e != nil || len(r) != 1 || !strings.Contains(r[0].Reason, "XHTTP") {
 				t.Fatal("unsupported format fabricated", r, e)
 			}

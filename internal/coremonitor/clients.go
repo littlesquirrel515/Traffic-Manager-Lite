@@ -2,6 +2,7 @@ package coremonitor
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -19,7 +20,27 @@ func (s Service) clients(i core.Instance, o *observation) {
 	start := time.Now()
 	var e error
 	if i.ConfigPath == "" {
-		o.note("clients", "配置用户枚举", "Unknown", "未提供只读配置；统计列表不是完整用户列表", "挂载实际配置文件并填写 TML 内路径")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		rows, err := s.Store.DB.QueryContext(ctx, `SELECT c.inbound_tag,c.asset_key,c.email,c.protocol,c.source FROM core_clients c WHERE c.instance_id=? AND c.source IN ('manual_unverified','hysteria_http_auth') AND c.present=1 AND EXISTS (SELECT 1 FROM catalog_inbounds b WHERE b.instance_id=c.instance_id AND b.tag=c.inbound_tag AND b.retired=0 AND b.present=1) LIMIT 10001`, i.ID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var a Client
+				if err = rows.Scan(&a.Inbound, &a.Key, &a.Email, &a.Protocol, &a.Source); err != nil {
+					break
+				}
+				o.clients = append(o.clients, a)
+			}
+			if err != nil || rows.Err() != nil || len(o.clients) > 10000 {
+				o.clients = nil
+			}
+		}
+		if len(o.clients) > 0 {
+			o.report.ConfigSource = "TML 已登记资产 / HTTP 认证账户（不证明核心完整资产）"
+		}
+		// A known manual subset is useful, but never marks full enumeration OK.
+		o.note("clients", "完整用户枚举", "Unknown", fmt.Sprintf("已登记 %d 个客户端；当前 API 未提供完整 Clients，登记不证明运行时完整清单；流量和连接列表不是用户资产清单", len(o.clients)), "通过入站管理登记已有客户端（manual_unverified）；可选配置来源须显式启用")
 		return
 	}
 	path, e := discovery.SafePath(s.Config.ConfigRoot, i.ConfigPath)

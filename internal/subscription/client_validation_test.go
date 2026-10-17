@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +59,33 @@ func TestRealClientConfigurationValidation(t *testing.T) {
 				t.Fatalf("official client rejected config: %s %v", out, e)
 			}
 			t.Logf("official %s configuration validated: %s", format, out)
+		})
+	}
+	resolved := make([]ResolvedClientNode, len(nodes))
+	for i, n := range nodes {
+		resolved[i] = ResolvedClientNode{ID: n.ID, Profile: n.Profile}
+	}
+	for _, format := range []string{"singbox", "mihomo"} {
+		t.Run(format+"-full", func(t *testing.T) {
+			r, e := Render(context.Background(), format, resolved, RenderOptions{Template: "full"})
+			if e != nil || len(r.Rejected) > 0 {
+				t.Fatal(e, r.Rejected)
+			}
+			dir := t.TempDir()
+			file := filepath.Join(dir, "full-config")
+			if e = os.WriteFile(file, r.Content, 0600); e != nil {
+				t.Fatal(e)
+			}
+			var cmd *exec.Cmd
+			if format == "singbox" {
+				cmd = exec.Command(sing, "check", "-c", file)
+			} else {
+				cmd = exec.Command(mihomo, "-t", "-f", file, "-d", dir)
+			}
+			out, e := cmd.CombinedOutput()
+			if e != nil {
+				t.Fatalf("official %s full config rejected: %s %v", format, out, e)
+			}
 		})
 	}
 }

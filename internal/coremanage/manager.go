@@ -18,12 +18,15 @@ import (
 var ErrConflict = errors.New("configuration revision conflict")
 
 type Target struct {
-	ID             int64  `json:"instance_id"`
-	Container      string `json:"container"`
-	Path           string `json:"host_config"`
-	ContainerPath  string `json:"container_config"`
-	NativeEndpoint string `json:"native_endpoint"`
-	APISecret      string `json:"api_secret"`
+	BasePath        string `json:"host_base_config,omitempty"`
+	CoreType        string `json:"core_type,omitempty"`
+	ExpectedVersion string `json:"expected_version,omitempty"`
+	ID              int64  `json:"instance_id"`
+	Container       string `json:"container"`
+	Path            string `json:"host_config"`
+	ContainerPath   string `json:"container_config"`
+	NativeEndpoint  string `json:"native_endpoint"`
+	APISecret       string `json:"api_secret"`
 }
 type User struct {
 	Name     string `json:"name"`
@@ -32,15 +35,17 @@ type User struct {
 	Flow     string `json:"flow,omitempty"`
 }
 type Request struct {
-	Operation      string `json:"operation"`
-	Revision       string `json:"revision"`
-	Inbound        string `json:"inbound"`
-	PreviousName   string `json:"previous_name"`
-	User           User   `json:"user"`
-	ConfirmDelete  bool   `json:"confirm_delete"`
-	ConfirmRestart bool   `json:"confirm_restart"`
+	Overlay        []ManagedUser `json:"overlay,omitempty"`
+	Operation      string        `json:"operation"`
+	Revision       string        `json:"revision"`
+	Inbound        string        `json:"inbound"`
+	PreviousName   string        `json:"previous_name"`
+	User           User          `json:"user"`
+	ConfirmDelete  bool          `json:"confirm_delete"`
+	ConfirmRestart bool          `json:"confirm_restart"`
 }
 type Result struct {
+	DeployMode       string           `json:"deploy_mode,omitempty"`
 	Revision         string           `json:"revision"`
 	PreviousRevision string           `json:"previous_revision,omitempty"`
 	Status           string           `json:"apply_status"`
@@ -50,6 +55,7 @@ type Result struct {
 	Reason           string           `json:"reason,omitempty"`
 }
 type journal struct {
+	PreviousRevision                          string
 	Old, New, Backup, Status, Version         string
 	Operation, Inbound, BeforeName, AfterName string
 	Updated                                   time.Time
@@ -61,6 +67,14 @@ type Manager struct {
 	Restart  func(context.Context, Target) error
 	Verify   func(context.Context, Target) error
 	mu       sync.Mutex
+	locks    sync.Map
+}
+
+func (m *Manager) instanceLock(id int64) func() {
+	v, _ := m.locks.LoadOrStore(id, &sync.Mutex{})
+	lock := v.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 func Hash(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
@@ -75,6 +89,14 @@ func (m *Manager) target(id int64) (Target, error) {
 	e := rejectLinks(t.Path)
 	if e != nil {
 		return t, errors.New("symlink or missing configuration rejected")
+	}
+	if t.BasePath != "" {
+		if filepath.Clean(t.BasePath) == filepath.Clean(t.Path) {
+			return t, errors.New("base and generated output must be distinct")
+		}
+		if !filepath.IsAbs(t.BasePath) || rejectLinks(t.BasePath) != nil {
+			return t, errors.New("invalid controlled base configuration")
+		}
 	}
 	return t, nil
 }
@@ -190,8 +212,8 @@ func public(in []any) []map[string]any {
 	return out
 }
 func (m *Manager) Read(ctx context.Context, id int64) (Result, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	unlock := m.instanceLock(id)
+	defer unlock()
 	t, e := m.target(id)
 	if e != nil {
 		return Result{}, e
@@ -200,7 +222,7 @@ func (m *Manager) Read(ctx context.Context, id int64) (Result, error) {
 	if e != nil {
 		return Result{}, e
 	}
-	_, in, e := parse(b)
+	view, e := publicFor(t.CoreType, b)
 	if e != nil {
 		return Result{}, e
 	}
@@ -215,12 +237,20 @@ func (m *Manager) Read(ctx context.Context, id int64) (Result, error) {
 			status = "SaveFailedOriginalPreserved"
 		}
 	}
-	if status == "Applied" && m.Verify != nil {
+	if (status == "Applied" || status == "RolledBack") && m.Verify != nil {
 		if err := m.Verify(ctx, t); err != nil {
 			status = "RuntimeUnverified"
 		}
 	}
-	return Result{Revision: Hash(b), Status: status, Version: j.Version, Inbounds: public(in), ObservedAt: time.Now().UTC().Format(time.RFC3339)}, nil
+	mode := "external"
+	if t.BasePath != "" {
+		mode = "managed"
+	}
+	previous := j.Old
+	if j.PreviousRevision != "" {
+		previous = j.PreviousRevision
+	}
+	return Result{Revision: Hash(b), PreviousRevision: previous, Status: status, Version: j.Version, Inbounds: view, DeployMode: mode, ObservedAt: time.Now().UTC().Format(time.RFC3339)}, nil
 }
 func mutate(root map[string]any, in []any, r Request) error {
 	var target map[string]any
@@ -337,8 +367,8 @@ func validUUID(s string) bool {
 	return true
 }
 func (m *Manager) Update(ctx context.Context, id int64, r Request) (Result, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	unlock := m.instanceLock(id)
+	defer unlock()
 	t, e := m.target(id)
 	if e != nil {
 		return Result{}, e
@@ -348,7 +378,17 @@ func (m *Manager) Update(ctx context.Context, id int64, r Request) (Result, erro
 		return Result{}, e
 	}
 	old := Hash(b)
-	if r.Revision != old {
+	base := b
+	if t.BasePath != "" {
+		if r.Operation != "overlay" {
+			return Result{}, errors.New("separate base/effective deployment only accepts overlays")
+		}
+		base, e = read(t.BasePath)
+		if e != nil {
+			return Result{}, e
+		}
+	}
+	if r.Revision != Hash(base) {
 		return Result{}, ErrConflict
 	}
 	j := m.load(id)
@@ -358,14 +398,27 @@ func (m *Manager) Update(ctx context.Context, id int64, r Request) (Result, erro
 	if j.Status == "PendingRestart" || j.Status == "Saved" {
 		return Result{}, errors.New("apply or roll back pending revision before next change")
 	}
-	root, in, e := parse(b)
-	if e != nil {
-		return Result{}, e
+	var candidate []byte
+	var in []any
+	if r.Operation == "overlay" {
+		kind := t.CoreType
+		if kind == "" {
+			kind = "singbox"
+		}
+		candidate, e = MergeOverlay(kind, base, r.Overlay)
+	} else {
+		if t.CoreType != "" && t.CoreType != "singbox" {
+			return Result{}, errors.New("use the managed overlay for this core")
+		}
+		var root map[string]any
+		root, in, e = parse(b)
+		if e == nil {
+			e = mutate(root, in, r)
+		}
+		if e == nil {
+			candidate, e = json.MarshalIndent(root, "", "  ")
+		}
 	}
-	if e = mutate(root, in, r); e != nil {
-		return Result{}, e
-	}
-	candidate, e := json.MarshalIndent(root, "", "  ")
 	if e != nil {
 		return Result{}, e
 	}
@@ -396,12 +449,18 @@ func (m *Manager) Update(ctx context.Context, id int64, r Request) (Result, erro
 	if e != nil || Hash(current) != old {
 		return Result{}, ErrConflict
 	}
+	if t.BasePath != "" {
+		currentBase, err := read(t.BasePath)
+		if err != nil || Hash(currentBase) != r.Revision {
+			return Result{}, ErrConflict
+		}
+	}
 	if e = os.MkdirAll(m.StateDir, 0700); e != nil {
 		return Result{}, e
 	}
 	backup := filepath.Join(m.StateDir, fmt.Sprintf("instance-%d-%s.json", id, old))
 	if _, e = os.Stat(backup); os.IsNotExist(e) {
-		if e = atomic(backup, b, 0600); e != nil {
+		if e = m.writeBackup(backup, b); e != nil {
 			return Result{}, e
 		}
 	}
@@ -421,8 +480,8 @@ func (m *Manager) Update(ctx context.Context, id int64, r Request) (Result, erro
 	return Result{Revision: j.New, PreviousRevision: old, Status: j.Status, Version: version, Inbounds: public(in), ObservedAt: time.Now().UTC().Format(time.RFC3339)}, nil
 }
 func (m *Manager) Apply(ctx context.Context, id int64, r Request) (Result, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	unlock := m.instanceLock(id)
+	defer unlock()
 	t, e := m.target(id)
 	if e != nil {
 		return Result{}, e
@@ -458,7 +517,7 @@ func (m *Manager) Apply(ctx context.Context, id int64, r Request) (Result, error
 	if e == nil {
 		j.Status = "Applied"
 	} else {
-		backup, err := read(j.Backup)
+		backup, err := m.readBackup(j.Backup)
 		if err != nil || Hash(backup) != j.Old {
 			return Result{}, errors.New("rollback backup unavailable; manual recovery required")
 		}
@@ -474,6 +533,7 @@ func (m *Manager) Apply(ctx context.Context, id int64, r Request) (Result, error
 			return Result{}, err
 		}
 		j.New = j.Old
+		j.PreviousRevision = r.Revision
 		j.Status = "RolledBack"
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err = m.Restart(recoveryCtx, t)

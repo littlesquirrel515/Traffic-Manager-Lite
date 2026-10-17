@@ -7,11 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"traffic-manager-lite/internal/catalog"
 	"traffic-manager-lite/internal/core"
+	"traffic-manager-lite/internal/inboundidentity"
 	"traffic-manager-lite/internal/storage"
 )
 
@@ -96,34 +97,51 @@ func SafePath(root, path string) (string, error) {
 	return target, nil
 }
 func Scan(ctx context.Context, s *storage.Store, inst core.Instance, root string) (int, error) {
-	path, e := SafePath(root, inst.ConfigPath)
+	path, b, e := ReadSource(root, inst.ConfigPath, inst.CoreType)
 	if e != nil {
-		return 0, e
-	}
-	info, e := os.Stat(path)
-	if e != nil || info.Size() > 4<<20 {
-		return 0, fmt.Errorf("configuration file unavailable or too large")
-	}
-	b, e := os.ReadFile(path)
-	if e != nil {
+		markMissing(ctx, s, inst, root)
 		return 0, fmt.Errorf("configuration read failed")
 	}
 	nodes, e := Parse(inst.CoreType, b)
 	if e != nil {
-		return 0, e
+		if inst.CoreType != "hysteria2" || !(strings.Contains(e.Error(), "HTTP/command")) {
+			return 0, e
+		}
+		// External authentication supplies no enumerable client credentials, but
+		// its inbound can still be catalogued. Never invent clients from traffic.
+		nodes = nil
 	}
 	h := sha256.Sum256(b)
+	if len(nodes) > 10000 {
+		return 0, fmt.Errorf("配置用户超过 10000 上限")
+	}
+	seenClients := map[string]bool{}
+	for _, n := range nodes {
+		key := n.Tag + "\x00" + n.Profile.UserKey
+		if seenClients[key] {
+			return 0, fmt.Errorf("入站中的用户标识重复，无法安全绑定")
+		}
+		seenClients[key] = true
+	}
 	hash := hex.EncodeToString(h[:])
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return 0, e
 	}
 	defer tx.Rollback()
+	mapping, e := inboundidentity.Sync(ctx, tx, inst.ID, path, hash, b, inst.CoreType)
+	if e != nil {
+		return 0, e
+	}
 	now := storage.Stamp(time.Now())
-	if _, e = tx.ExecContext(ctx, "UPDATE nodes SET present=0 WHERE instance_id=?", inst.ID); e != nil {
+	if _, e = tx.ExecContext(ctx, "UPDATE credential_material SET status='source_missing' WHERE instance_id=? AND source IN ('config','legacy_config')", inst.ID); e != nil {
 		return 0, e
 	}
 	for _, n := range nodes {
+		inbound, matched := mapping[n.Tag]
+		if !matched {
+			continue
+		}
 		var uid int64
 		e = tx.QueryRowContext(ctx, "SELECT user_id FROM identities WHERE instance_id=? AND core_user_key=? AND scope='user' ORDER BY id LIMIT 1", inst.ID, n.Profile.UserKey).Scan(&uid)
 		if e == sql.ErrNoRows {
@@ -140,96 +158,18 @@ func Scan(ctx context.Context, s *storage.Store, inst core.Instance, root string
 		if e != nil {
 			return 0, e
 		}
-		id := ID(inst.ID, n.Tag, n.Profile.UserKey)
-		over := map[string]any{}
-		var raw string
-		e = tx.QueryRowContext(ctx, "SELECT overrides_json FROM nodes WHERE id=?", id).Scan(&raw)
-		if e == nil {
-			if e = json.Unmarshal([]byte(raw), &over); e != nil {
-				return 0, e
-			}
-		} else if e != sql.ErrNoRows {
-			return 0, e
-		}
-		effective, e := Effective(n.Profile, over)
+		id, e := inboundidentity.ClientKey(ctx, tx, inbound, n.Profile.UserKey, ID(inst.ID, n.Tag, n.Profile.UserKey))
 		if e != nil {
 			return 0, e
 		}
-		d, _ := json.Marshal(n.Profile)
-		eff, _ := json.Marshal(effective)
-		_, e = tx.ExecContext(ctx, `INSERT INTO nodes(id,instance_id,inbound_tag,user_id,protocol,discovered_json,effective_json,source_hash,enabled,present,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?)
- ON CONFLICT(id) DO UPDATE SET discovered_json=excluded.discovered_json,effective_json=excluded.effective_json,source_hash=excluded.source_hash,enabled=excluded.enabled,present=1,updated_at=excluded.updated_at`, id, inst.ID, n.Tag, uid, n.Profile.Protocol, string(d), string(eff), hash, effective.Enabled, now)
-		if e != nil {
+		auth, _ := json.Marshal(map[string]string{"uuid": n.Profile.UUID, "password": n.Profile.Password})
+		if _, e = tx.ExecContext(ctx, `INSERT INTO credential_material(id,instance_id,inbound_tag,core_client_ref,user_id,auth_json,status,source,verified_at) VALUES(?,?,?,?,?,?,'available','config',?) ON CONFLICT(id) DO UPDATE SET inbound_tag=excluded.inbound_tag,auth_json=excluded.auth_json,status='available',verified_at=excluded.verified_at`, id, inst.ID, n.Tag, n.Profile.UserKey, uid, string(auth), now); e != nil {
 			return 0, e
 		}
+
+	}
+	if e = catalog.Sync(ctx, tx, inst.ID, path, hash, b); e != nil {
+		return 0, e
 	}
 	return len(nodes), tx.Commit()
-}
-func Nodes(ctx context.Context, s *storage.Store) ([]core.Node, error) {
-	rows, e := s.DB.QueryContext(ctx, "SELECT id,instance_id,inbound_tag,user_id,effective_json,overrides_json,source_hash,present FROM nodes ORDER BY id")
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	out := []core.Node{}
-	for rows.Next() {
-		var n core.Node
-		var eff, over string
-		if e = rows.Scan(&n.ID, &n.InstanceID, &n.InboundTag, &n.UserID, &eff, &over, &n.SourceHash, &n.Present); e != nil {
-			return nil, e
-		}
-		if e = json.Unmarshal([]byte(eff), &n.Profile); e != nil {
-			return nil, e
-		}
-		if e = json.Unmarshal([]byte(over), &n.Overrides); e != nil {
-			return nil, e
-		}
-		n.Issues = Issues(n.Profile)
-		if !n.Present {
-			n.Issues = append(n.Issues, "配置中已移除")
-		}
-		n.Complete = len(n.Issues) == 0
-		out = append(out, n)
-	}
-	return out, rows.Err()
-}
-func Patch(ctx context.Context, s *storage.Store, id string, patch map[string]any) error {
-	tx, e := s.DB.BeginTx(ctx, nil)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
-	var d, o string
-	if e = tx.QueryRowContext(ctx, "SELECT discovered_json,overrides_json FROM nodes WHERE id=?", id).Scan(&d, &o); e != nil {
-		return e
-	}
-	var p core.NodeProfile
-	over := map[string]any{}
-	if e = json.Unmarshal([]byte(d), &p); e != nil {
-		return e
-	}
-	if e = json.Unmarshal([]byte(o), &over); e != nil {
-		return e
-	}
-	for k, v := range patch {
-		if !OverrideFields[k] {
-			return fmt.Errorf("invalid override field")
-		}
-		if v == nil {
-			delete(over, k)
-		} else {
-			over[k] = v
-		}
-	}
-	p, e = Effective(p, over)
-	if e != nil {
-		return e
-	}
-	eff, _ := json.Marshal(p)
-	ov, _ := json.Marshal(over)
-	_, e = tx.ExecContext(ctx, "UPDATE nodes SET overrides_json=?,effective_json=?,enabled=?,updated_at=? WHERE id=?", string(ov), string(eff), p.Enabled, storage.Stamp(time.Now()), id)
-	if e != nil {
-		return e
-	}
-	return tx.Commit()
 }

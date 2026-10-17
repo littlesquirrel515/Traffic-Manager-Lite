@@ -1,4 +1,10 @@
 # Merge into your existing HTTPS server block; certificate setup remains yours.
+# Hysteria2 calls TML directly on the private Docker network, bypassing Nginx.
+location ^~ /core-auth/ {
+    access_log off;
+    error_log /dev/null crit;
+    return 404;
+}
 location / {
     proxy_pass http://127.0.0.1:18080;
     proxy_set_header Host $host;
@@ -8,8 +14,14 @@ location / {
     client_max_body_size 1m;
 }
 # Subscription tokens must not enter URL access logs.
+# For both legacy and catalog URLs, optionally enable a limit_req zone declared
+# in the http{} context. Example there:
+# limit_req_zone $binary_remote_addr zone=tml_sub:10m rate=1r/s;
 location /sub/ {
     access_log off;
+    # Also protect token-bearing request URIs from upstream error logs.
+    error_log /dev/null crit;
+    # limit_req zone=tml_sub burst=10 nodelay;
     proxy_pass http://127.0.0.1:18080;
     proxy_set_header Host $host;
 }

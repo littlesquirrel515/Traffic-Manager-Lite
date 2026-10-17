@@ -1,0 +1,13 @@
+# Optional TML-only override. Does not authorize writes or modify proxy services.
+# Create a 0600, UID10001-readable key before applying; keep an offline copy.
+services:
+  traffic-manager-lite:
+    environment:
+      TML_MANAGED_KEY_FILE: /app/secrets/managed.key
+    volumes:
+      - ${TML_MANAGED_KEY_HOST_FILE:?Set the existing private key file}:/app/secrets/managed.key:ro
+# Managed Deploy proxy setup is an operator-reviewed change in the proxy Compose:
+# keep base/config.json separate; directory-bind generated/ into the proxy, and
+# make its fixed startup command load generated/effective.json. Initialize that
+# file from a checked base before startup. The host-agent mapping must name both
+# paths and the exact running version. Never mount Docker Socket into TML.

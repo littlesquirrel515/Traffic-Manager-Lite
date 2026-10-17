@@ -30,11 +30,20 @@ func Compatible(format string, p core.NodeProfile) string {
 		return "不支持的协议"
 	}
 	if p.Transport == "xhttp" {
-		if format != "v2ray" {
+		if format == "singbox" {
 			return "当前客户端生成器不支持 XHTTP，未输出"
 		}
-		if p.Protocol != "vless" || !p.TLS || p.Reality || p.PublicKey != "" {
-			return "目前仅支持简单 VLESS + TLS + XHTTP 分享链接"
+		if p.Protocol != "vless" || !p.TLS {
+			return "仅验证 VLESS + TLS/REALITY + XHTTP"
+		}
+		if len(p.XHTTPLimitations) > 0 {
+			return strings.Join(p.XHTTPLimitations, "；")
+		}
+		if reason := ValidateXHTTP(p); reason != "" {
+			return reason
+		}
+		if format == "v2ray" && (p.Reality || p.PublicKey != "" || len(p.XHTTPHeaders) > 0 || p.XHTTPNoGRPCHeader != nil || p.XHTTPPadding != "") {
+			return "此 XHTTP 安全/扩展组合仅验证 Mihomo 1.19.32，不生成分享 URI"
 		}
 		if !strings.HasPrefix(p.Path, "/") {
 			return "XHTTP 缺少有效路径"
@@ -63,7 +72,7 @@ func Compatible(format string, p core.NodeProfile) string {
 	if p.PublicKey != "" && !p.TLS {
 		return "Reality 必须启用 TLS"
 	}
-	if p.PublicKey != "" && (p.Protocol != "vless" || p.Transport != "tcp") {
+	if p.PublicKey != "" && (p.Protocol != "vless" || p.Transport != "tcp" && !(format == "mihomo" && p.Transport == "xhttp")) {
 		return "当前仅验证 VLESS + TCP + Reality"
 	}
 	if p.Flow != "" && (p.Protocol != "vless" || p.Transport != "tcp") {
@@ -235,6 +244,20 @@ func mihomo(p core.NodeProfile) map[string]any {
 	if p.Transport == "grpc" {
 		m["network"] = "grpc"
 		m["grpc-opts"] = map[string]string{"grpc-service-name": p.ServiceName}
+	}
+	if p.Transport == "xhttp" {
+		m["network"] = "xhttp"
+		opts := map[string]any{"path": p.Path, "host": p.Host, "mode": first(p.XHTTPMode, "auto")}
+		if len(p.XHTTPHeaders) > 0 {
+			opts["headers"] = p.XHTTPHeaders
+		}
+		if p.XHTTPNoGRPCHeader != nil {
+			opts["no-grpc-header"] = *p.XHTTPNoGRPCHeader
+		}
+		if p.XHTTPPadding != "" {
+			opts["x-padding-bytes"] = p.XHTTPPadding
+		}
+		m["xhttp-opts"] = opts
 	}
 	return m
 }

@@ -1,0 +1,12 @@
+# Optional override; paths are operator supplied, never used as instance identity.
+# docker compose -f docker-compose.yml -f docker-compose.catalog.example.yml config
+# Copy beside the outer Compose file and remove mounts for cores you do not use.
+services:
+  traffic-manager-lite:
+    volumes:
+      - ${TML_XRAY_CONFIG_DIR:?Set the actual readonly Xray configuration directory}:/app/configs/xray:ro
+      - ${TML_SINGBOX_CONFIG_DIR:?Set the actual readonly sing-box configuration directory}:/app/configs/singbox:ro
+      - ${TML_HYSTERIA_CONFIG_DIR:?Set the actual readonly Hysteria2 configuration directory}:/app/configs/hysteria2:ro
+# Register the corresponding /app/configs/... path on each instance in the UI.
+# Additional arbitrary instances can use separate readonly destinations below
+# /app/configs. Do not mount Docker Socket. No proxy core is restarted by discovery.

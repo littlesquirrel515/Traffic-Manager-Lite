@@ -16,9 +16,6 @@ func (a *API) diagnosticSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []map[string]any{}
 	for _, row := range rows {
-		if r.URL.Path == "/api/v1/xray/diagnostics" && row["core_type"] != "xray" {
-			continue
-		}
 		if kind := r.URL.Query().Get("core_type"); kind != "" && kind != row["core_type"] {
 			continue
 		}

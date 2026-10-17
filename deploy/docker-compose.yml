@@ -13,7 +13,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups
-      - ${TML_CONFIG_HOST_DIR:-./configs}:/app/configs:ro
     networks:
       - my-network
     read_only: true

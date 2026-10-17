@@ -42,7 +42,9 @@ type Filter struct {
 }
 
 func (s *Store) Traffic(ctx context.Context, f Filter, history bool) ([]map[string]any, error) {
-	dims := map[string]string{"user": "COALESCE(CAST(i.user_id AS TEXT),'未归属')", "instance": "CAST(i.instance_id AS TEXT)", "server": "CAST(x.server_id AS TEXT)", "inbound": "i.inbound_tag", "core": "x.core_type", "protocol": "(SELECT CASE WHEN count(DISTINCT n.protocol)=1 THEN min(n.protocol) ELSE '未归属' END FROM nodes n WHERE n.instance_id=i.instance_id AND (i.inbound_tag='' OR n.inbound_tag=i.inbound_tag) AND n.user_id=i.user_id AND n.present=1)", "node": "(SELECT CASE WHEN count(*)=1 THEN min(n.id) ELSE '未归属' END FROM nodes n WHERE n.instance_id=i.instance_id AND (i.inbound_tag='' OR n.inbound_tag=i.inbound_tag) AND n.user_id=i.user_id AND n.present=1)"}
+	matchedClients := ` FROM catalog_inbounds c JOIN inbound_client_keys k ON k.inbound_id=c.id JOIN credential_material a ON a.id=k.credential_id WHERE c.instance_id=i.instance_id AND a.core_client_ref=i.core_user_key AND (i.inbound_tag='' OR c.tag=i.inbound_tag) AND c.present=1`
+	matchedNodes := ` FROM node_profiles n JOIN catalog_inbounds c ON c.id=n.inbound_id JOIN inbound_client_keys k ON k.inbound_id=c.id JOIN credential_material a ON a.id=k.credential_id WHERE c.instance_id=i.instance_id AND a.core_client_ref=i.core_user_key AND (i.inbound_tag='' OR c.tag=i.inbound_tag) AND c.present=1`
+	dims := map[string]string{"user": "COALESCE(CAST(i.user_id AS TEXT),'未归属')", "instance": "CAST(i.instance_id AS TEXT)", "server": "CAST(x.server_id AS TEXT)", "inbound": "i.inbound_tag", "core": "x.core_type", "protocol": "(SELECT CASE WHEN count(DISTINCT c.protocol)=1 THEN min(c.protocol) ELSE '未归属' END" + matchedClients + ")", "node": "(SELECT CASE WHEN count(DISTINCT n.id)=1 THEN min(n.id) ELSE '未归属' END" + matchedNodes + ")"}
 	dim := "'total'"
 	if f.Dimension != "" {
 		var ok bool

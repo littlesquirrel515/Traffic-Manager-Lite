@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	ManagedKeyFile                                                                      string
 	CoreAgentURL, CoreAgentToken                                                        string
 	Listen, DBPath, BackupDir, AdminUser, AdminPassword, Timezone, LogLevel, ConfigRoot string
 	Interval, Timeout, ActiveWindow                                                     time.Duration
@@ -24,7 +25,9 @@ func value(k, d string) string {
 	return d
 }
 func Load() (Config, error) {
+	managedKeyFile := value("MANAGED_KEY_FILE", "")
 	c := Config{CoreAgentURL: value("CORE_AGENT_URL", ""), CoreAgentToken: value("CORE_AGENT_TOKEN", ""), Listen: value("LISTEN", ":8080"), DBPath: value("DB_PATH", "data/traffic.db"), BackupDir: value("BACKUP_DIR", "backups"), AdminUser: value("ADMIN_USER", "admin"), AdminPassword: value("ADMIN_PASSWORD", ""), Timezone: value("TIMEZONE", "Asia/Shanghai"), LogLevel: value("LOG_LEVEL", "info"), ConfigRoot: value("CONFIG_ROOT", "configs")}
+	c.ManagedKeyFile = managedKeyFile
 	for _, target := range strings.Split(os.Getenv("TML_ALLOWED_TARGETS"), ",") {
 		if target = strings.TrimSpace(target); target != "" {
 			c.AllowedTargets = append(c.AllowedTargets, target)

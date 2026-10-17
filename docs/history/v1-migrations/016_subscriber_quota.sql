@@ -1,0 +1,13 @@
+ALTER TABLE subscribers ADD COLUMN traffic_limit_bytes INTEGER NOT NULL DEFAULT 0 CHECK(traffic_limit_bytes>=0);
+ALTER TABLE subscribers ADD COLUMN expires_at TEXT;
+ALTER TABLE subscribers ADD COLUMN activated_at TEXT;
+ALTER TABLE subscribers ADD COLUMN quota_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE subscribers ADD COLUMN expiry_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE subscribers ADD COLUMN quota_revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE subscribers ADD COLUMN quota_initialized INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE subscribers ADD COLUMN quota_reset_at TEXT;
+ALTER TABLE subscribers ADD COLUMN quota_policy TEXT NOT NULL DEFAULT 'report_partial';
+ALTER TABLE subscriber_credentials ADD COLUMN billable INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE subscriptions ADD COLUMN subscriber_id TEXT REFERENCES subscribers(id);
+CREATE TABLE subscriber_usage_sources(subscriber_id TEXT NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,instance_id INTEGER NOT NULL REFERENCES instances(id),inbound_id TEXT NOT NULL DEFAULT '',client_ref TEXT NOT NULL,baseline_upload INTEGER NOT NULL DEFAULT 0,baseline_download INTEGER NOT NULL DEFAULT 0,baseline_known INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1,frozen_upload INTEGER,frozen_download INTEGER,frozen_state TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,PRIMARY KEY(subscriber_id,instance_id,inbound_id,client_ref));
+CREATE TABLE subscriber_quota_audit(id INTEGER PRIMARY KEY,subscriber_id TEXT NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,action TEXT NOT NULL,before_json TEXT NOT NULL,after_json TEXT NOT NULL,created_at TEXT NOT NULL);

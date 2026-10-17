@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,9 +58,28 @@ func TestDockerOfficialSingBoxManagedUsers(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !ready {
+		logs, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", "12", name).CombinedOutput()
+		message := string(logs)
+		for _, value := range []string{secret, "hy-private-password", "tls-private-password", "00000000-0000-4000-8000-000000000001"} {
+			message = strings.ReplaceAll(message, value, "[redacted]")
+		}
+		t.Log(message)
 		t.Fatal("actual official Docker API not ready")
 	}
 	m := &Manager{Targets: map[int64]Target{1: target}, StateDir: filepath.Join(dir, "private-state"), Check: (Docker{}).Check, Restart: (Docker{}).Restart}
+	m.Check = func(c context.Context, tgt Target, path string) (string, error) {
+		v, err := (Docker{}).Check(c, tgt, path)
+		if err != nil {
+			t.Log("official check boundary:", err)
+			logs, _ := exec.CommandContext(c, "docker", "exec", name, "sing-box", "check", "-c", "/configs/"+filepath.Base(path)).CombinedOutput()
+			message := string(logs)
+			for _, value := range []string{secret, "hy-private-password", "tls-private-password", "new-private-password", "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000099"} {
+				message = strings.ReplaceAll(message, value, "[redacted]")
+			}
+			t.Log(message)
+		}
+		return v, err
+	}
 	state, e := m.Read(ctx, 1)
 	if e != nil {
 		t.Fatal(e)

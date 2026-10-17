@@ -12,3 +12,10 @@
 
 .settings-list > div{min-width:0;overflow-wrap:anywhere}.panel > p{overflow-wrap:anywhere}.toolbar button{max-width:100%;overflow-wrap:anywhere}
 .subscription-picker{min-width:0}.subscription-picker .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.subscription-picker .filters input{max-width:none}.subscription-picker .checklist{max-height:300px}.subscription-picker .checklist label{display:flex;align-items:flex-start;gap:8px;overflow-wrap:anywhere}.subscription-picker small{display:block}.subscription-warning{color:var(--red)}.subscription-order{display:flex;gap:6px;align-items:center;margin:8px 0}.subscription-order span{flex:1;min-width:0;overflow-wrap:anywhere}@media(max-width:767px){.subscription-picker .filters{grid-template-columns:1fr}}
+:root .catalog-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.catalog-columns label{display:block;padding:8px}.catalog-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto}.catalog-columns input[type=checkbox]{margin-right:8px}@media(max-width:700px){.catalog-columns{grid-template-columns:1fr}}
+
+#sidebar{overflow-y:auto}#sidebar .sidebar-bottom{flex-shrink:0}#sidebar nav{flex-shrink:0}
+@media(max-width:767px){.diagnostic-table{overflow:visible}.diagnostic-table table,.diagnostic-table tbody{width:100%}.diagnostic-table td>button{grid-column:2;justify-self:start;max-width:100%;white-space:normal}.diagnostic-table td input,.diagnostic-table td select{max-width:100%;min-width:0}}
+#notice{color:var(--text)}
+
+.entry-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0}.entry-filters label{min-width:0}.entry-filters input,.entry-filters select{width:100%;max-width:100%}.entry-preview{padding:16px;border:1px solid var(--border);border-radius:12px;overflow-wrap:anywhere}#fields label[hidden]{display:none}@media(max-width:700px){.entry-filters{grid-template-columns:1fr}}

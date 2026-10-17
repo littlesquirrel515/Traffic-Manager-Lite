@@ -10,6 +10,7 @@ import (
 	"traffic-manager-lite/internal/config"
 	"traffic-manager-lite/internal/core"
 	"traffic-manager-lite/internal/coremonitor"
+	"traffic-manager-lite/internal/remote"
 	"traffic-manager-lite/internal/storage"
 )
 
@@ -68,6 +69,7 @@ func (s *Scheduler) Collect(ctx context.Context, id int64) error {
 	if !inst.ServerEnabled {
 		return fmt.Errorf("服务器已停用，所属实例暂停采集")
 	}
+	remote.RecheckRuntime(ctx, s.Store, *inst, s.Config.ManagedKeyFile, s.Config.AllowedTargets)
 	report, err := (coremonitor.Service{Store: s.Store, Config: s.Config}).Observe(requestContext, *inst, false, "collection")
 	if err != nil {
 		return s.recordError(ctx, id, err)

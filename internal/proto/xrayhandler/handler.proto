@@ -1,17 +1,54 @@
-// Read-only wire projection of Xray-core v26.3.27 (MPL-2.0).
-// Field numbers match upstream; no mutation RPCs are generated.
+// Isolated wire projection of Xray-core v26.3.27 (MPL-2.0).
+// Mutation RPCs are only used by explicitly confirmed administrator actions.
 syntax = "proto3";
 package xray.app.proxyman.command;
 option go_package = "traffic-manager-lite/internal/proto/xrayhandler;xrayhandlerpb";
 message TypedAccount { string type = 1; bytes value = 2; }
 message User { uint32 level = 1; string email = 2; TypedAccount account = 3; }
-message Inbound { string tag = 1; }
+message Inbound { string tag = 1; TypedAccount receiver_settings = 2; TypedAccount proxy_settings = 3; }
+message PortRange { uint32 from = 1; uint32 to = 2; }
+message PortList { repeated PortRange range = 1; }
+message IPOrDomain { bytes ip = 1; string domain = 2; }
+message ReceiverConfig { PortList port_list = 1; IPOrDomain listen = 2; StreamConfig stream_settings = 3; }
+message StreamConfig { repeated TransportConfig transport_settings = 2; string security_type = 3; repeated TypedAccount security_settings = 4; string protocol_name = 5; }
+message TransportConfig { TypedAccount settings = 2; string protocol_name = 3; }
+message WSConfig { string host = 1; string path = 2; map<string,string> header = 3; uint32 ed = 5; }
+message XHTTPRange { int32 from = 1; int32 to = 2; }
+message XHTTPXmux {
+ XHTTPRange max_concurrency = 1; XHTTPRange max_connections = 2;
+ XHTTPRange c_max_reuse_times = 3; XHTTPRange h_max_request_times = 4;
+ XHTTPRange h_max_reusable_secs = 5; int64 h_keep_alive_period = 6;
+}
+// XHTTP v26.3.27-v26.9.9 wire fields; default builder fields are not extras.
+message XHTTPConfig {
+ string host = 1; string path = 2; string mode = 3; map<string,string> headers = 4;
+ XHTTPRange x_padding_bytes = 5; bool no_grpc_header = 6; bool no_sse_header = 7;
+ XHTTPRange sc_max_each_post_bytes = 8; XHTTPRange sc_min_posts_interval_ms = 9;
+ int64 sc_max_buffered_posts = 10; XHTTPRange sc_stream_up_server_secs = 11;
+ XHTTPXmux xmux = 12; StreamConfig download_settings = 13;
+ bool x_padding_obfs_mode = 14; string x_padding_key = 15; string x_padding_header = 16;
+ string x_padding_placement = 17; string x_padding_method = 18; string uplink_http_method = 19;
+ string session_placement = 20; string session_key = 21; string seq_placement = 22;
+ string seq_key = 23; string uplink_data_placement = 24; string uplink_data_key = 25;
+ XHTTPRange uplink_chunk_size = 26; int32 server_max_header_bytes = 27;
+ string session_id_table = 28; XHTTPRange session_id_length = 29;
+}
+message GRPCConfig { string authority = 1; string service_name = 2; bool multi_mode = 3; }
+message TLSConfig { string server_name = 3; repeated string next_protocol = 4; string fingerprint = 11; }
+message RealityConfig { repeated string server_names = 5; bytes private_key = 6; repeated bytes short_ids = 10; bytes mldsa65_seed = 11; }
+message UUIDAccount { string id = 1; string flow = 2; }
+message PasswordAccount { string password = 1; }
+message AddUserOperation { User user = 1; }
+message RemoveUserOperation { string email = 1; }
+message AlterInboundRequest { string tag = 1; TypedAccount operation = 2; }
+message AlterInboundResponse {}
 message ListInboundsRequest { bool isOnlyTags = 1; }
 message ListInboundsResponse { repeated Inbound inbounds = 1; }
 message GetInboundUserRequest { string tag = 1; string email = 2; }
 message GetInboundUserResponse { repeated User users = 1; }
 message GetInboundUsersCountResponse { int64 count = 1; }
 service HandlerService {
+ rpc AlterInbound(AlterInboundRequest) returns (AlterInboundResponse);
  rpc ListInbounds(ListInboundsRequest) returns (ListInboundsResponse);
  rpc GetInboundUsers(GetInboundUserRequest) returns (GetInboundUserResponse);
  rpc GetInboundUsersCount(GetInboundUserRequest) returns (GetInboundUsersCountResponse);

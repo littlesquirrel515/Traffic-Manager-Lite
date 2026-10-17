@@ -21,9 +21,12 @@ type inspection struct {
 		Type, Source, Destination string
 		RW                        bool
 	}
-	Args   []string
-	Path   string
-	State  struct{ Running bool }
+	Args  []string
+	Path  string
+	State struct {
+		Running   bool
+		StartedAt string
+	}
 	Config struct{ Cmd, Entrypoint []string }
 }
 
@@ -48,7 +51,7 @@ func inspect(ctx context.Context, t Target) (inspection, error) {
 	count := 0
 	args := append([]string{v.Path}, v.Args...)
 	for n, a := range args {
-		if a == "-c" || a == "--config" {
+		if a == "-c" || a == "--config" || a == "-config" {
 			count++
 			if n+1 >= len(args) || args[n+1] != t.ContainerPath {
 				return v, errors.New("multiple or mismatched configuration files rejected")
@@ -83,18 +86,21 @@ func inspect(ctx context.Context, t Target) (inspection, error) {
 	return v, nil
 }
 func (Docker) Check(ctx context.Context, t Target, candidate string) (string, error) {
+	if t.CoreType != "" && t.CoreType != "singbox" {
+		return checkAdditional(ctx, t, candidate)
+	}
 	if _, e := inspect(ctx, t); e != nil {
 		return "", e
 	}
 	if filepath.Dir(candidate) != filepath.Dir(t.Path) {
 		return "", errors.New("candidate path rejected")
 	}
-	b, e := command(ctx, "exec", t.Container, "/usr/bin/sing-box", "version")
+	b, e := command(ctx, "exec", t.Container, "sing-box", "version")
 	if e != nil || !strings.HasPrefix(string(b), "sing-box version 1.14.3\n") {
 		return "", errors.New("only verified sing-box 1.14.3 configuration management enabled")
 	}
 	path := strings.TrimSuffix(t.ContainerPath, filepath.Base(t.ContainerPath)) + filepath.Base(candidate)
-	if _, e = command(ctx, "exec", t.Container, "/usr/bin/sing-box", "check", "-c", path); e != nil {
+	if _, e = command(ctx, "exec", t.Container, "sing-box", "check", "-c", path); e != nil {
 		return "", e
 	}
 	return "1.14.3", nil
@@ -138,6 +144,9 @@ func nativeStarted(ctx context.Context, t Target) (int64, error) {
 	return started.StartedAt, nil
 }
 func (Docker) Restart(ctx context.Context, t Target) error {
+	if t.CoreType != "" && t.CoreType != "singbox" {
+		return restartAdditional(ctx, t)
+	}
 	if _, e := inspect(ctx, t); e != nil {
 		return e
 	}
@@ -168,6 +177,9 @@ func (Docker) Restart(ctx context.Context, t Target) error {
 }
 
 func (Docker) Verify(ctx context.Context, t Target) error {
+	if t.CoreType != "" && t.CoreType != "singbox" {
+		return verifyAdditional(ctx, t)
+	}
 	if _, e := inspect(ctx, t); e != nil {
 		return e
 	}

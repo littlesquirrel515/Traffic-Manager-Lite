@@ -15,7 +15,7 @@ func (s Service) assetMatches(i core.Instance, o *observation, inbound, user str
 		}
 		return tags
 	}
-	rows, err := s.Store.DB.QueryContext(context.Background(), "SELECT inbound_tag FROM core_clients WHERE instance_id=? AND email=? AND present=1", i.ID, user)
+	rows, err := s.Store.DB.QueryContext(context.Background(), `SELECT DISTINCT inbound_tag FROM core_clients c WHERE instance_id=? AND email=? AND present=1 AND (source NOT IN ('manual_unverified','hysteria_http_auth') OR EXISTS (SELECT 1 FROM catalog_inbounds b JOIN inbound_client_keys k ON k.inbound_id=b.id JOIN credential_material m ON m.id=k.credential_id WHERE b.instance_id=c.instance_id AND b.tag=c.inbound_tag AND k.client_ref=c.email AND b.retired=0 AND b.present=1 AND m.status='available'))`, i.ID, user)
 	if err != nil {
 		return tags
 	}

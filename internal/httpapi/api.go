@@ -15,7 +15,7 @@ import (
 	"traffic-manager-lite/internal/discovery"
 	"traffic-manager-lite/internal/security"
 	"traffic-manager-lite/internal/storage"
-	"traffic-manager-lite/internal/subscription"
+
 	"traffic-manager-lite/web"
 )
 
@@ -29,6 +29,10 @@ type API struct {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	admin := http.NewServeMux()
+	a.catalogRoutes(admin)
+	a.remoteRoutes(admin)
+	a.subscriberProvisioningRoutes(admin)
+	a.hysteriaAuthRoutes(mux, admin)
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()
@@ -47,7 +51,6 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("GET /api/v1/servers/{id}", a.getServer)
 	admin.HandleFunc("PATCH /api/v1/servers/{id}", a.updateServer)
 	admin.HandleFunc("DELETE /api/v1/servers/{id}", a.deleteServer)
-	admin.HandleFunc("GET /api/v1/xray/diagnostics", a.diagnosticSummary)
 	admin.HandleFunc("GET /api/v1/cores/diagnostics", a.diagnosticSummary)
 	admin.HandleFunc("GET /api/v1/instances/{id}/diagnostics", a.diagnosticDetails)
 	admin.HandleFunc("POST /api/v1/instances/{id}/diagnostics", a.diagnose)
@@ -81,54 +84,14 @@ func (a *API) Handler() http.Handler {
 	admin.HandleFunc("PATCH /api/v1/users/{id}", a.patchUser)
 	admin.HandleFunc("POST /api/v1/users/{id}/identities", a.mergeIdentity)
 	admin.HandleFunc("GET /api/v1/online", func(w http.ResponseWriter, r *http.Request) { v, e := a.online(r.Context()); result(w, v, e) })
-	admin.HandleFunc("GET /api/v1/nodes", func(w http.ResponseWriter, r *http.Request) {
-		nodes, e := discovery.Nodes(r.Context(), a.Store)
-		out := []map[string]any{}
-		for _, n := range nodes {
-			compat := map[string]string{}
-			for _, f := range []string{"v2ray", "mihomo", "singbox"} {
-				compat[f] = subscription.Compatible(f, n.Profile)
-			}
-			out = append(out, map[string]any{"node": n, "compatibility": compat})
-		}
-		result(w, out, e)
-	})
-	admin.HandleFunc("POST /api/v1/discovery/scan", a.scan)
-	admin.HandleFunc("PATCH /api/v1/nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
-		var patch map[string]any
-		if !body(w, r, &patch) {
-			return
-		}
-		e := discovery.Patch(r.Context(), a.Store, r.PathValue("id"), patch)
-		result(w, map[string]bool{"updated": e == nil}, e)
-	})
-	admin.HandleFunc("GET /api/v1/subscriptions", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, "SELECT id,name,format,user_id,selection_scope,enabled,created_at,updated_at,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM subscription_nodes WHERE subscription_id=s.id ORDER BY position)) node_ids FROM subscriptions s ORDER BY id")
-	})
-	admin.HandleFunc("POST /api/v1/subscriptions/preview", func(w http.ResponseWriter, r *http.Request) {
-		var d subscription.Definition
-		if !body(w, r, &d) {
-			return
-		}
-		p, e := subscription.Preview(r.Context(), a.Store, d)
-		result(w, p, e)
-	})
-	admin.HandleFunc("POST /api/v1/subscriptions", a.saveSubscription)
-	admin.HandleFunc("PATCH /api/v1/subscriptions/{id}", a.saveSubscription)
-	admin.HandleFunc("POST /api/v1/subscriptions/{id}/rotate", func(w http.ResponseWriter, r *http.Request) {
-		id, e := pathID(r)
-		t := ""
-		if e == nil {
-			t, e = subscription.Rotate(r.Context(), a.Store, id)
-		}
-		result(w, map[string]string{"token": t}, e)
-	})
 	admin.HandleFunc("POST /api/v1/maintenance/archive", func(w http.ResponseWriter, r *http.Request) {
 		n, e := a.Store.Archive(r.Context(), time.Now())
 		result(w, map[string]int64{"deleted": n}, e)
 	})
 	admin.HandleFunc("POST /api/v1/maintenance/backup", func(w http.ResponseWriter, r *http.Request) {
-		p, e := a.Store.Backup(r.Context(), a.Config.BackupDir)
+		var p string
+		var e error
+		p, e = a.Store.Backup(r.Context(), a.Config.BackupDir)
 		result(w, map[string]string{"backup": p}, e)
 	})
 	admin.HandleFunc("GET /api/v1/settings", func(w http.ResponseWriter, r *http.Request) {
@@ -140,11 +103,17 @@ func (a *API) Handler() http.Handler {
 	})
 	admin.HandleFunc("PATCH /api/v1/settings", a.settings)
 	mux.Handle("/api/v1/", a.Auth.Protect(admin))
-	mux.HandleFunc("GET /sub/{format}/{token}", a.output)
+	mux.HandleFunc("GET /sub/{token}", a.catalogPublicHandler())
+	mux.HandleFunc("/sub/", http.NotFound)
 	files := http.FileServer(http.FS(web.Files))
 	mux.Handle("GET /login.html", files)
 	mux.Handle("GET /style.css", files)
 	mux.Handle("GET /app.js", files)
+	mux.Handle("GET /catalog.js", files)
+	mux.Handle("GET /inbounds.js", files)
+	mux.Handle("GET /remote.js", files)
+	mux.Handle("GET /subscribers.js", files)
+	mux.Handle("GET /quota.js", files)
 	mux.Handle("GET /login.js", files)
 	mux.Handle("/", a.Auth.Protect(files))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +209,14 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 		result(w, nil, fmt.Errorf("invalid instance"))
 		return
 	}
+	d.APIEndpoint = strings.TrimSpace(d.APIEndpoint)
+	d.ControlEndpoint = strings.TrimSpace(d.ControlEndpoint)
+	d.ClashEndpoint = strings.TrimSpace(d.ClashEndpoint)
+	// HTTP cores accept the host:port form shown by Docker without relaxing
+	// target validation; explicit schemes and their security checks are retained.
+	if d.CoreType == "hysteria2" && d.APIEndpoint != "" && !strings.Contains(d.APIEndpoint, "://") {
+		d.APIEndpoint = "http://" + d.APIEndpoint
+	}
 	if e := security.ValidateEndpoint(d.APIEndpoint, d.CoreType == "hysteria2"); e != nil && !(d.CoreType == "singbox" && d.APIEndpoint == "" && (d.ControlEndpoint != "" || d.ClashEndpoint != "")) {
 		result(w, nil, e)
 		return
@@ -318,63 +295,6 @@ func (a *API) saveInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	result(w, map[string]int64{"id": id}, e)
 }
-func (a *API) saveSubscription(w http.ResponseWriter, r *http.Request) {
-	var d subscription.Definition
-	if !body(w, r, &d) {
-		return
-	}
-	var id int64
-	var e error
-	if r.Method == "PATCH" {
-		id, e = pathID(r)
-	}
-	token := ""
-	if e == nil {
-		id, token, e = subscription.Save(r.Context(), a.Store, id, d)
-	}
-	result(w, map[string]any{"id": id, "token": token}, e)
-}
-func (a *API) scan(w http.ResponseWriter, r *http.Request) {
-	var d struct {
-		InstanceID int64 `json:"instance_id"`
-	}
-	if !body(w, r, &d) {
-		return
-	}
-	list, e := a.Store.Instances(r.Context())
-	if e != nil {
-		result(w, nil, e)
-		return
-	}
-	out := []map[string]any{}
-	for _, i := range list {
-		if (d.InstanceID == 0 || d.InstanceID == i.ID) && i.ConfigPath != "" {
-			n, e := discovery.Scan(r.Context(), a.Store, i, a.Config.ConfigRoot)
-			row := map[string]any{"instance_id": i.ID, "nodes": n}
-			if e != nil {
-				row["error"] = e.Error()
-			}
-			out = append(out, row)
-		}
-	}
-	respond(w, 200, out)
-}
-func (a *API) output(w http.ResponseWriter, r *http.Request) {
-	b, ct, rejected, e := subscription.Output(r.Context(), a.Store, r.PathValue("format"), r.PathValue("token"))
-	if e != nil {
-		if errors.Is(e, subscription.ErrNoUsableNodes) {
-			w.Header().Set("Cache-Control", "no-store")
-			http.Error(w, e.Error(), http.StatusUnprocessableEntity)
-			return
-		}
-		http.Error(w, "订阅不可用", 404)
-		return
-	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("X-TML-Filtered-Nodes", strconv.Itoa(len(rejected)))
-	w.Write(b)
-}
 func (a *API) patchUser(w http.ResponseWriter, r *http.Request) {
 	id, e := pathID(r)
 	var d struct {
@@ -418,7 +338,7 @@ func (a *API) reassign(ctx context.Context, user, id int64) error {
 	if _, e = tx.ExecContext(ctx, "UPDATE identities SET user_id=? WHERE id=?", user, id); e != nil {
 		return e
 	}
-	if _, e = tx.ExecContext(ctx, "UPDATE nodes SET user_id=? WHERE instance_id=? AND json_extract(effective_json,'$.user_key')=?", user, inst, key); e != nil {
+	if _, e = tx.ExecContext(ctx, "UPDATE credential_material SET user_id=? WHERE instance_id=? AND core_client_ref=?", user, inst, key); e != nil {
 		return e
 	}
 	return tx.Commit()

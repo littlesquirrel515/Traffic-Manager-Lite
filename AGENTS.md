@@ -1,3 +1,21 @@
+# v2.0 当前约束（优先于下方 v1 历史）
+
+订阅用户业务修正（2026-10-16）：订阅用户统一创建/纳管 Client，入站只读展示，不从入站独立执行运行时增删。002_subscriber_provisioning 为 v2 追加迁移，不改已执行 001；原生资产展示/纳管不自动接管为 Desired。动态创建仅按实际能力开放 Xray VLESS/VMess/Trojan，加密 Desired、读后写/回读、任务幂等、失败 pending、停用不恢复；HY/sing-box 不得伪造 AddUser。Hosts 普通表单仅 Address/Port/Host/SNI，协议参数继承，SNI 表示 TLS 入口。准确边界见 docs/subscriber-client-lifecycle.md。
+
+生产状态（2026-10-15）：用户明确确认后已清空 TML 自有业务数据并切换 v2，远程核心及 Nginx 未重启。最终停服恢复目录 `/data/traffic-manager-lite/backups/v2-cutover-20261015-111644`。本次已有授权不等于允许未来再次清库；后续操作以新 v2 数据为准。
+
+v2 接入修正：HY host:port 保存时补全 http://，仍严格校验目标；sing-box 原生地址与可选兼容统计地址分开。非 Xray 手动客户端登记同时写独立 core_clients(manual_unverified)/身份，不依赖 Stats 或配置枚举；Clients 显示已登记数量但完整性仍 Unknown。原生归属按 inbound+name，兼容同名跨入站不猜测归属。线上三种 sing-box 入站已一次性登记，不能伪装成原生完整枚举。见 docs/v2-connectivity-fix.md。
+
+默认 Remote-First，仅 API 接入，不要求 SSH/配置文件，不启动 discovery.RunSync 或旧配置调和任务。Clients/Stats/Online 独立，API 能力和采集健康独立。Xray 官方序列化配置安全投影；无法枚举的核心使用 manual_unverified 登记，不能从统计/连接补造完整 Clients。
+
+仅 migrations/001_v2_initial.sql 新库基线。非空 v1/外部数据库在任何写入前拒绝，禁止自动升级或 reset。旧迁移仅在 docs/history 审计，不嵌入。生产重建必须先完成代码/测试/独占库证据/一致性备份/范围计数，按用户 v2 需求 §1.1.7 最后明确确认后才替换。tml-baseline 只准备备份和候选库，不执行 reset。绝不删除/改写远程核心配置、入站、用户、计数器或 Docker 卷。
+
+新建连接入口原子创建稳定绑定/节点，不创建核心客户端。活动 meter 唯一归属 Subscriber，计费来源去重；首次观察基线、解绑冻结、30 天归档语义保持。运行时写入必须管理员显式确认、加密 Desired、精确 endpoint/tag/protocol 证据，runtime_only 不冒充持久化。Xray 缺失恢复默认关闭，仅逐账号授权后允许幂等添加，不自动删除/替换冲突账号。
+
+准确说明：docs/remote-core-architecture.md、docs/traffic-accounting.md、docs/clean-baseline.md、docs/v2-verification.md。下面 v1 状态为历史；与 v2 冲突的旧升级链/兼容保留/默认配置发现规则不再适用。
+
+---
+
 # Traffic Manager Lite
 
 个人代理流量监控系统：Go 单体、net/http、纯 Go SQLite WAL、嵌入中文响应式 Web。
@@ -37,3 +55,11 @@ Xray/V2Fly 使用各自官方 StatsService protobuf；sing-box 只使用实际�
 v1.4 来源证据补充：迁移012保留每次计数器观察（含基线/零增量）的来源、版本、配置hash、原值、方向和增量，30天后按日归档元数据证据；来源证据不能再次加入流量总计。旧provider未知游标升级后重新基线。历史修复拒绝选定范围中已纠正证据，原生用户raw累计是observed_connection_deltas虚拟账本，不冒充核心完整用户计数器。
 
 订阅修正（2026-10-11）：迁移013保留旧订阅user范围和Token，新增管理员明确授权的bundle跨实例节点集合，user_id为NULL。订阅只输出已保存的节点ID，不自动加入新资产；user模式仍检查归属。启用保存至少一个可用节点，运行时全部失效返回422，不返回成功空白。预览只返回数量/过滤原因，不能输出客户端凭据。前端默认bundle，支持多选/搜索/实例筛选/顺序/移除/检查。Mihomo proxies和sing-box outbounds为节点集合，不冒充完整路由配置；API地址不能当客户端地址。见docs/subscription-management.md。
+
+Node Catalog（2026-10-12）：迁移014把历史节点认证移入 credential_material，保留旧订阅 Token/授权；新增 auth-free 全局 Inbound/Endpoint/Node/Group、独立 Subscriber 和按入站/手动节点的显式凭据绑定。配置只读同步保留人工覆盖及稳定ID；来源删除/结构冲突保留对象并过滤输出，不修改核心。ResolvedClientNode 在授权后合并认证，Renderer 不读取数据库或核心；Raw/Base64、Mihomo/sing-box 完整模板及集合模板独立。旧 Mihomo 地址默认补全选择组和规则。预览掩码，完整导出需明确确认，Token 仅哈希、公开路由限流及脱敏审计。回滚014必须恢复匹配的旧数据库和镜像。见 docs/subscription-architecture.md。
+
+配置调和 v1.1（2026-10-13）：新迁移015（001–014不变）增加稳定身份别名/历史/pending、legacy client keys、AES-GCM Desired、计划/actions outbox、观察/确认/授权自动恢复策略及修复审计。整组Tag交换需全部明确确认后事务改名；不同协议/实例不自动绑定。配置发现始终读取实际Effective；Managed Deploy策略base_path另指只读Base，宿主固定base/effective映射验证，不能同文件或由UI自动改Compose。新增Xray文件overlay官方test/Handler账号验证、HY静态userpass认证字段补丁与版本/epoch/Traffic健康（无官方离线check，不声明完整验证）。敏感Desired/应用备份加密，旧完整配置观察vault仍有认证，不伪装整体数据库加密。默认Observe不写核心；Assisted应用/回滚再次确认重启；Managed逐实例授权。中断需精确revision/代次证据Verify或再次确认恢复，不能用DB成功冒充跨进程事务。Endpoint复制/排序/事务批量与订阅联动，旧Token授权不变；历史去重先备份+预览修订、保留多Endpoint，不改流量事实。核心限界、密钥、升级回滚见docs/configuration-reconciliation.md；本轮真实隔离容器与UI验证见docs/verification.md。
+
+订阅配额与XHTTP（2026-10-13）：迁移016扩展Subscriber统一额度/UTC到期/乐观修订，默认新用户10GiB、激活后三个日历月（末日截断）。旧用户待确认，不自动激活或清零；绑定来源从traffic_daily用户账本去重，原生sing-box观测差值为partial，未知精确剩余为null。周期重置用基线，解绑冻结已计费用量；代理链由管理员显式选择billable入口。公开订阅统一元数据、过期/耗尽403、require_complete缺失503；不踢用户/不改核心。旧订阅关联需已有全部凭据授权，不轮换Token。Mihomo1.19.32支持VLESS XHTTP TLS/REALITY四种mode，参数显式映射，未知extra按Renderer过滤，sing-box1.14.3仍不声明XHTTP。见docs/subscriber-quota-xhttp.md。
+
+入站中心管理v1.2（2026-10-14）：迁移017增加inbound_endpoint_bindings及Node binding_id/variant_key，保持旧ID/覆盖/分组/Token/配额。Inbound服务端、Endpoint外部入口、Proxy Node订阅资源，正式规范见docs/domain-glossary.md与docs/node-endpoint-architecture.md。新建入口原子创建绑定及默认Node，可选request_id幂等；旧合法多变体保留。普通Node编辑禁止修改Inbound归属。监听/协议参数变化保留公网端口并暂停受影响绑定发布，确认来源与转发后恢复；退役不停止核心且不生成替代身份。跨协议明确同实例候选/精确修订、暂停旧凭据与冻结既有用量、重新绑定新认证；有托管Desired拒绝。凭据归属用稳定inbound_client_keys，不再靠Tag推断。新入口只改TML数据库，不创建Client/改核心/Nginx或Docker映射；ready仅配置完整，网络Unknown。

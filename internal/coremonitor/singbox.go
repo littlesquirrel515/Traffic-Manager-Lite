@@ -49,50 +49,54 @@ func (s Service) singbox(ctx context.Context, i core.Instance, o *observation, q
 		}
 		o.check("runtime", "原生 GetVersion", "/daemon.StartedService/GetVersion", "Bearer Secret（不记录）", "services.type=api；原生 API 与兼容 API 端口可不同", start, 0, e)
 	})
-	s.bounded(ctx, func(c context.Context) {
-		start := time.Now()
-		conn, e := s.dial(c, i, i.APIEndpoint)
-		n := 0
-		if e == nil {
-			defer conn.Close()
-			r, err := pb.NewStatsServiceClient(conn).QueryStats(c, &pb.QueryStatsRequest{Reset_: false})
-			e = err
+	if i.APIEndpoint != "" {
+		s.bounded(ctx, func(c context.Context) {
+			start := time.Now()
+			conn, e := s.dial(c, i, i.APIEndpoint)
+			n := 0
 			if e == nil {
-				n = len(r.Stat)
-				if n > 20000 {
-					e = fmt.Errorf("counter limit")
-				} else {
-					cs := []stats.Counter{}
-					for _, v := range r.Stat {
-						cs = append(cs, stats.Counter{Name: v.Name, Value: v.Value})
-					}
-					o.records, e = stats.Records(i, cs)
-					if e == nil {
-						filtered := []core.TrafficRecord{}
-						for _, record := range o.records {
-							record.Source = "singbox-v2ray"
-							if record.Scope == "user" {
-								tag, ok := s.uniqueUserInbound(i, o, record.UserKey)
-								if !ok {
-									continue
-								}
-								record.InboundTag = tag
-								record.Mapped = true
-							}
-							filtered = append(filtered, record)
+				defer conn.Close()
+				r, err := pb.NewStatsServiceClient(conn).QueryStats(c, &pb.QueryStatsRequest{Reset_: false})
+				e = err
+				if e == nil {
+					n = len(r.Stat)
+					if n > 20000 {
+						e = fmt.Errorf("counter limit")
+					} else {
+						cs := []stats.Counter{}
+						for _, v := range r.Stat {
+							cs = append(cs, stats.Counter{Name: v.Name, Value: v.Value})
 						}
-						o.records = filtered
+						o.records, e = stats.Records(i, cs)
+						if e == nil {
+							filtered := []core.TrafficRecord{}
+							for _, record := range o.records {
+								record.Source = "singbox-v2ray"
+								if record.Scope == "user" {
+									tag, ok := s.uniqueUserInbound(i, o, record.UserKey)
+									if !ok {
+										continue
+									}
+									record.InboundTag = tag
+									record.Mapped = true
+								}
+								filtered = append(filtered, record)
+							}
+							o.records = filtered
+						}
 					}
 				}
 			}
-		}
-		o.statsOK = e == nil
-		o.userStatsOK = e == nil
-		if e != nil {
-			o.records = nil
-		}
-		o.check("stats", "V2Ray QueryStats", "/experimental.v2rayapi.StatsService/QueryStats", "reset=false", "with_v2ray_api 编译标签 + experimental.v2ray_api + stats.enabled/users/inbounds；用户粒度仅按实际计数器", start, n, e)
-	})
+			o.statsOK = e == nil
+			o.userStatsOK = e == nil
+			if e != nil {
+				o.records = nil
+			}
+			o.check("stats", "V2Ray QueryStats", "/experimental.v2rayapi.StatsService/QueryStats", "reset=false", "with_v2ray_api 编译标签 + experimental.v2ray_api + stats.enabled/users/inbounds；用户粒度仅按实际计数器", start, n, e)
+		})
+	} else {
+		o.note("stats", "V2Ray QueryStats", "Disabled", "未配置独立 V2Ray 兼容统计地址；不向原生服务调用不相容的方法", "可选功能；原生流量和连接采集独立工作")
+	}
 	if quick {
 		if i.ClashEndpoint != "" {
 			s.clash(ctx, i, o, true)
