@@ -263,8 +263,8 @@ func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) (
 	if e != nil {
 		return nil, nil, 0, e
 	}
-	var subscriberEnabled bool
-	if e = q.QueryRowContext(ctx, "SELECT enabled FROM subscribers WHERE id=?", d.SubscriberID).Scan(&subscriberEnabled); e != nil {
+	var subscriberEnabled, nodeAuthorizationRequired bool
+	if e = q.QueryRowContext(ctx, "SELECT enabled,node_authorization_required FROM subscribers WHERE id=?", d.SubscriberID).Scan(&subscriberEnabled, &nodeAuthorizationRequired); e != nil {
 		return nil, nil, 0, e
 	}
 	out := []ResolvedClientNode{}
@@ -281,6 +281,16 @@ func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) (
 		if !subscriberEnabled {
 			rejected = append(rejected, Rejection{id, "disabled：订阅用户已停用"})
 			continue
+		}
+		if nodeAuthorizationRequired {
+			var granted int
+			if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_node_grants WHERE subscriber_id=? AND node_id=? AND inbound_id=?", d.SubscriberID, id, n.InboundID).Scan(&granted); e != nil {
+				return nil, nil, 0, e
+			}
+			if granted != 1 {
+				rejected = append(rejected, Rejection{id, "node_not_authorized：节点未分配给此订阅用户"})
+				continue
+			}
 		}
 		if n.Status != "ready" && !(n.Source == "manual" && n.Status == "needs_review") {
 			rejected = append(rejected, Rejection{id, n.Status})

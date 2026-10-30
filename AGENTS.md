@@ -1,4 +1,6 @@
-# v2.0 当前约束（优先于下方 v1 历史）
+# v2.1 当前约束（优先于下方 v1 历史）
+
+v2.1 节点流程（2026-10-27）：普通订阅用户选择节点/节点组，不直接选择 Inbound；004 为追加迁移，不清库，旧用户/Token 授权保持兼容。组按确认时成员快照授权，新用户输出逐节点验权；同来源去重 Client 和计费，父任务全部完成才启用，重试不得覆盖管理员停用。原生纳管保留高级流程。见 docs/subscriber-node-workflow-v2.1.md。
 
 订阅用户业务修正（2026-10-16）：订阅用户统一创建/纳管 Client，入站只读展示，不从入站独立执行运行时增删。002_subscriber_provisioning 为 v2 追加迁移，不改已执行 001；原生资产展示/纳管不自动接管为 Desired。动态创建仅按实际能力开放 Xray VLESS/VMess/Trojan，加密 Desired、读后写/回读、任务幂等、失败 pending、停用不恢复；HY/sing-box 不得伪造 AddUser。Hosts 普通表单仅 Address/Port/Host/SNI，协议参数继承，SNI 表示 TLS 入口。准确边界见 docs/subscriber-client-lifecycle.md。
 

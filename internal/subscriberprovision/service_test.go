@@ -22,16 +22,17 @@ import (
 
 type handlerFixture struct {
 	hp.UnimplementedHandlerServiceServer
-	mu      sync.Mutex
-	users   map[string]*hp.User
-	adds    int
-	blocked bool
+	mu         sync.Mutex
+	users      map[string]*hp.User
+	adds       int
+	blocked    bool
+	blockedTag string
 }
 
 func (f *handlerFixture) GetInboundUsers(_ context.Context, d *hp.GetInboundUserRequest) (*hp.GetInboundUserResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.blocked {
+	if f.blocked || f.blockedTag == d.Tag {
 		return nil, status.Error(codes.Unavailable, "fixture unavailable")
 	}
 	r := &hp.GetInboundUserResponse{}

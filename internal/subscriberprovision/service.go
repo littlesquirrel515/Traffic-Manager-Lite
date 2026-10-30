@@ -244,7 +244,9 @@ func (s Service) Retry(ctx context.Context, request string) (Result, error) {
 	if _, e = subscription.Bind(ctx, s.Store, subscription.Binding{SubscriberID: r.SubscriberID, InboundID: &inbound, CredentialID: credential.String, Enabled: true}); e != nil {
 		return finish("pending", "客户端已存在，凭据授权未完成；可能已归属其他用户，请核查后重试")
 	}
-	_, e = s.Store.DB.ExecContext(ctx, "UPDATE subscribers SET enabled=?,updated_at=? WHERE id=?", enabled, storage.Stamp(time.Now()), r.SubscriberID)
+	// v2.1 node workflows activate only after every required target is ready.
+	// Child retries must not re-enable an administrator-disabled subscriber.
+	_, e = s.Store.DB.ExecContext(ctx, "UPDATE subscribers SET enabled=?,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM subscriber_node_tasks WHERE child_request_id=?)", enabled, storage.Stamp(time.Now()), r.SubscriberID, request)
 	if e != nil {
 		return finish("pending", "凭据已绑定，用户启用待重试")
 	}

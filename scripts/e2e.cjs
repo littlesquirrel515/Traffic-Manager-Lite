@@ -45,6 +45,24 @@ async function main(){
  const nativeClient=await page.evaluate(async inbound=>api('catalog/inbounds/'+inbound+'/clients','POST',{client_ref:'native-pool-user',uuid:'11111111-1111-4111-8111-111111111111',confirmed:true}),storedChoices[0]);
  await page.goto(base+'/#subscribers');await page.locator('[data-action=adopt-native-client][data-id="'+nativeClient.id+'"]').click();await page.locator('#fields [name=name]').fill('Native pool subscriber');await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open);
  assert.ok(await page.evaluate(async()=>(await api('catalog/subscribers')).some(s=>s.name==='Native pool subscriber')));assert.equal(await page.locator('[data-action=remote-runtime]').count(),0);
+ // Existing assignments are recalled from saved subscriptions, not inferred
+ // from all nodes sharing an inbound. Searching must preserve both old/new checks.
+ const assignmentNodes=await page.evaluate(async inbound=>{const n=await api('catalog/nodes');return{old:n.find(n=>n.inbound_id===inbound&&n.name==='Remote entrance').id,extra:n.find(n=>n.inbound_id===inbound&&n.name==='Browser secondary').id}},model.inbound);
+ await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();
+ await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
+ const assignedBox=page.locator('[data-subscriber-node="'+assignmentNodes.old+'"]'),extraBox=page.locator('[data-subscriber-node="'+assignmentNodes.extra+'"]');
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await assignedBox.isDisabled(),true);assert.equal(await extraBox.isChecked(),false);
+ await extraBox.check();await page.locator('#fields [name=subscriber_node_search]').fill('no matching node');await page.locator('#fields [name=subscriber_node_search]').fill('');
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);
+ await page.locator('#cancel-dialog').click();await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();
+ await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),false);
+ await extraBox.check();await page.locator('#subscriber-node-preview').click();
+ await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以配置'),{},{timeout:5000});
+ assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('已选 1 个节点'));
+ await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000});
+ await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);assert.equal(await extraBox.isDisabled(),true);await page.locator('#cancel-dialog').click();
  // Prepare only: existing static/native subscription stays valid until a
  // separately confirmed core configuration change. No fake dynamic users.
  await page.goto(base+'/#subscribers');await page.locator('[data-action=hy-auth-prepare][data-id="'+model.inbound+'"]').click();
@@ -54,6 +72,29 @@ async function main(){
  const callbackConfig=await page.locator('#hy-auth-config').inputValue();assert.ok(callbackConfig.includes('type: http'));assert.ok(callbackConfig.includes('http://traffic-manager-lite:8080/core-auth/hysteria2/'));await page.locator('#cancel-dialog').click();
  const authState=await page.evaluate(async()=>api('catalog/hysteria-auth'));assert.equal(authState.length,1);assert.equal(authState[0].confirmed,0);assert.equal(authState[0].account_count,1);assert.equal(authState[0].last_success_at,null);assert.ok(!JSON.stringify(authState).includes('token_hash'));
  const noGhost=await page.evaluate(async inbound=>{const before=(await api('catalog/subscribers')).length;let denied=false;try{await api('catalog/subscriber-provisioning','POST',{request_id:'browser-unconfirmed-hy-001',subscriber:{name:'Must not exist',enabled:true},inbound_id:inbound,mode:'managed',confirmed:true})}catch{denied=true}return denied&&before===(await api('catalog/subscribers')).length},model.inbound);assert.equal(noGhost,true);if(process.env.TML_E2E_HY_ONLY){console.log('PASS: bounded HY preparation UI, credential redaction and unconfirmed creation rejection');return}
+ // v2.1 ordinary form exposes nodes, not core Inbound selection. The fixture
+ // core is intentionally unreachable: pending is expected, never fake success.
+ const nodeFlow=await page.evaluate(async server=>{
+  const x=(await api('instances')).find(i=>i.core_type==='xray');
+  await api('instances/'+x.id,'PATCH',{server_id:server,name:x.name,core_type:'xray',api_endpoint:x.api_endpoint,enabled:true});
+  const inbound=await api('catalog/inbounds','POST',{instance_id:x.id,tag:'node-workflow',profile:{protocol:'vless',transport:'ws',enabled:true}});
+  const node=await api('catalog/connections','POST',{inbound_id:inbound.id,name:'Business node fixture',enabled:true,profile:{address:'node.example.com',port:443,sni:'origin.example.com'}});
+  return node;
+ },data.server.id);
+ await page.goto(base+'/#subscribers');await page.locator('[data-kind=subscribers][data-action=catalog-edit]').first().click();
+ await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
+ assert.equal(await page.locator('#fields [name=inbound_id]').count(),0);
+ assert.equal(await page.locator('#fields [name=mode]').count(),0);
+ await page.locator('#fields [name=name]').fill('Business node subscriber');
+ await page.locator('[data-subscriber-node="'+nodeFlow.node_id+'"]').check();await page.locator('#subscriber-node-preview').click();
+ await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以配置'),{},{timeout:5000});
+ for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'node form overflow '+width);await page.screenshot({path:path.join(output,'subscriber-node-form-'+width+'.png'),fullPage:true})}
+ await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();
+ await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000});
+ const businessUser=await page.evaluate(async()=>{const users=await api('catalog/subscribers'),requests=await api('catalog/subscriber-node-requests'),grants=await api('catalog/subscriber-node-grants');return{user:users.find(u=>u.name==='Business node subscriber'),requests,grants}});
+ assert.equal(businessUser.user.enabled,0);assert.equal(businessUser.user.node_authorization_required,1);assert.ok(businessUser.requests.some(p=>p.subscriber_id===businessUser.user.id&&p.status==='pending'));
+ assert.ok(businessUser.grants.some(g=>g.subscriber_id===businessUser.user.id&&g.node_id===nodeFlow.node_id));
+ await page.locator('[data-action=subscriber-node-details][data-id="'+businessUser.requests.find(p=>p.subscriber_id===businessUser.user.id).request_id+'"]').click();await page.waitForFunction(()=>document.querySelector('#edit-title').textContent==='节点认证配置详情',{},{timeout:5000});assert.ok((await page.locator('#fields').innerText()).includes('pending'));await page.locator('#cancel-dialog').click();
  for(const format of ['raw','base64','mihomo','singbox']){const r=await fetch(base+'/sub/'+model.token+'?format='+format);assert.equal(r.status,200,format);assert.ok((await r.text()).length>20)}
  await page.evaluate(id=>api('instances/'+id+'/collect','POST',{}),data.instance.id);counter=3;await page.evaluate(id=>api('instances/'+id+'/collect','POST',{}),data.instance.id);
  const facts=await page.evaluate(async id=>({clients:await api('catalog/inbounds/'+id+'/clients'),traffic:await api('traffic/summary?dimension=instance&scope=user&range=all')}),model.inbound);assert.equal(facts.clients.length,1);assert.ok(facts.traffic.some(v=>v.upload===6000&&v.download===3000));
@@ -62,6 +103,6 @@ async function main(){
  for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});for(const target of targets){await page.evaluate(t=>{location.hash=t},target);await page.waitForFunction(()=>!document.querySelector('#content').textContent.includes('正在加载'));await page.waitForTimeout(150);assert.equal(await page.locator('#content').getByText('数据加载失败',{exact:true}).count(),0,target);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${target}: overflow ${width}`);checks++}await page.evaluate(()=>{location.hash='inbounds'});await page.waitForTimeout(250);await page.screenshot({path:path.join(output,'remote-fixture-'+width+'.png'),fullPage:true})}
  const nav=await page.locator('#sidebar').innerText();for(const removed of ['旧版','全局节点库','配置调和','重复数据修复','托管用户'])assert.ok(!nav.includes(removed));
  await page.evaluate(()=>{location.hash='instances'});await page.getByRole('button',{name:'接入实例',exact:false}).click();assert.equal(await page.locator('#fields [name=config_path]').count(),0);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.locator('#cancel-dialog').click();
- assert.deepEqual(failures,[]);console.log(`PASS: API-only empty onboarding, manual inbound/client, idempotent entry/node, unique meter owner, 4 renderers, HY HTTP-auth preparation without phantom users or native subscription breakage, HY directional fixture traffic, ${checks} responsive page checks; no configuration mounts or core writes`);
+ assert.deepEqual(failures,[]);console.log(`PASS: API-only empty onboarding, manual inbound/client, idempotent entry/node, unique meter owner, 4 renderers, HY HTTP-auth preparation without phantom users or native subscription breakage, HY directional fixture traffic, v2.1 existing-assignment recall/search/reopen/delta-submit and node-only creation/preview/pending tasks and 3 form viewports, ${checks} responsive page checks; no configuration mounts or core writes`);
 }
 main().catch(e=>{console.error(e);console.error('Browser errors:',failures);console.error(logs);process.exitCode=1}).finally(async()=>{if(browser)await browser.close();if(backend)backend.kill();fixture.close()});

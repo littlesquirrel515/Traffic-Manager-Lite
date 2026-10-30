@@ -211,7 +211,7 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 		a.rows(w, r, `SELECT s.*,(SELECT count(*) FROM catalog_subscriptions WHERE subscriber_id=s.id) subscription_count,(SELECT count(*) FROM subscriber_credentials WHERE subscriber_id=s.id) credential_count FROM subscribers s ORDER BY name,id`)
 	})
 	admin.HandleFunc("POST /api/v1/catalog/subscribers", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 409, map[string]string{"error": "创建订阅用户必须通过 subscriber-provisioning 选择目标入站并创建或纳管真实 Client"})
+		respond(w, 409, map[string]string{"error": "创建订阅用户必须通过节点授权流程选择代理节点或节点组，原生客户端可使用高级纳管流程"})
 	})
 	for _, method := range []string{"PATCH /api/v1/catalog/subscribers/{id}"} {
 		admin.HandleFunc(method, func(w http.ResponseWriter, r *http.Request) {
