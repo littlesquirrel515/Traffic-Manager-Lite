@@ -23,7 +23,7 @@ func NodeAssignments(ctx context.Context, q catalog.Query, subscriber string) ([
  SELECT s.subscriber_id,n.node_id,s.created_at,0 FROM catalog_subscriptions s JOIN subscribers u ON u.id=s.subscriber_id JOIN catalog_subscription_nodes n ON n.subscription_id=s.id WHERE u.node_authorization_required=0
  UNION ALL
  SELECT s.subscriber_id,m.node_id,s.created_at,0 FROM catalog_subscriptions s JOIN subscribers u ON u.id=s.subscriber_id JOIN catalog_subscription_groups g ON g.subscription_id=s.id JOIN node_group_members m ON m.group_id=g.group_id WHERE u.node_authorization_required=0
- ) SELECT a.subscriber_id,u.name,a.node_id,n.name,MIN(a.created_at),MAX(a.explicit) FROM assigned a JOIN subscribers u ON u.id=a.subscriber_id JOIN node_profiles n ON n.id=a.node_id WHERE (?='' OR a.subscriber_id=?) GROUP BY a.subscriber_id,a.node_id ORDER BY u.name,n.name,a.node_id`, subscriber, subscriber)
+ ) SELECT a.subscriber_id,u.name,a.node_id,n.name,MIN(a.created_at),MAX(a.explicit) FROM assigned a JOIN subscribers u ON u.id=a.subscriber_id JOIN node_profiles n ON n.id=a.node_id WHERE (?='' OR a.subscriber_id=?) AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations r WHERE r.subscriber_id=a.subscriber_id AND r.node_id=a.node_id) GROUP BY a.subscriber_id,a.node_id ORDER BY u.name,n.name,a.node_id`, subscriber, subscriber)
 	if e != nil {
 		return nil, e
 	}

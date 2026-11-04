@@ -1,0 +1,2 @@
+CREATE TABLE preferred_generation_requests(request_id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE preferred_generated_nodes(template_node_id TEXT NOT NULL REFERENCES node_profiles(id) ON DELETE CASCADE,fingerprint TEXT NOT NULL,node_id TEXT NOT NULL UNIQUE REFERENCES node_profiles(id) ON DELETE CASCADE,PRIMARY KEY(template_node_id,fingerprint));

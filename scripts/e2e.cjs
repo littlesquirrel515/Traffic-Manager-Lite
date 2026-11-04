@@ -2,11 +2,12 @@
 const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.TML_PLAYWRIGHT_MODULE||'playwright');
 const root=path.resolve(__dirname,'..'),tmp=fs.mkdtempSync(path.join(os.tmpdir(),'tml-v2-e2e-')),output=path.join(root,'dist','ui-verification-v2');fs.mkdirSync(output,{recursive:true});
+const managedKey=path.join(tmp,'managed.key');fs.writeFileSync(managedKey,Buffer.alloc(32,107),{mode:0o600});
 const password='temporary-fixture-password-12345';let counter=0,browser,backend,logs='';const failures=[];
 const fixture=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');if(req.method!=='GET'||req.url.includes('clear=')){res.statusCode=405;res.end('{}');failures.push('destructive fixture request');return}res.end(req.url==='/traffic'?JSON.stringify({alice:{tx:counter*2000,rx:counter*1000}}):req.url==='/online'?JSON.stringify({alice:0}):'[]')});
 async function main(){
  await new Promise(r=>fixture.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:18081';
- backend=spawn(path.join(root,'dist','traffic-manager-lite'+(process.platform==='win32'?'.exe':'')),[],{cwd:root,windowsHide:true,env:{...process.env,TML_CORE_AGENT_URL:'',TML_MANAGED_KEY_FILE:'',TML_LISTEN:'127.0.0.1:18081',TML_DB_PATH:path.join(tmp,'v2.db'),TML_BACKUP_DIR:path.join(tmp,'backups'),TML_CONFIG_ROOT:path.join(tmp,'not-mounted'),TML_ADMIN_PASSWORD:password,TML_SECURE_COOKIE:'false',TML_COLLECT_INTERVAL:'1h',TML_ALLOWED_TARGETS:''}});
+ backend=spawn(path.join(root,'dist','traffic-manager-lite'+(process.platform==='win32'?'.exe':'')),[],{cwd:root,windowsHide:true,env:{...process.env,TML_CORE_AGENT_URL:'',TML_MANAGED_KEY_FILE:managedKey,TML_LISTEN:'127.0.0.1:18081',TML_DB_PATH:path.join(tmp,'v2.db'),TML_BACKUP_DIR:path.join(tmp,'backups'),TML_CONFIG_ROOT:path.join(tmp,'not-mounted'),TML_ADMIN_PASSWORD:password,TML_SECURE_COOKIE:'false',TML_COLLECT_INTERVAL:'1h',TML_ALLOWED_TARGETS:''}});
  backend.stdout.on('data',b=>logs+=b);backend.stderr.on('data',b=>logs+=b);
  for(let k=0;k<120;k++){try{if((await fetch(base+'/api/v1/health')).ok)break}catch{}await new Promise(r=>setTimeout(r,100))}
  browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',e=>failures.push(e.message));
@@ -22,13 +23,13 @@ async function main(){
  const model=await page.evaluate(async instance=>{
   const inbound=(await api('catalog/inbound-management')).find(i=>i.instance_id===instance);if(!inbound)throw Error('no manual inbound');
   const credential=await api('catalog/inbounds/'+inbound.id+'/clients','POST',{client_ref:'alice',password:'alice:fixture-password',confirmed:true});
-  const request={inbound_id:inbound.id,name:'Remote entrance',enabled:true,request_id:'v2-e2e-request-0001',profile:{address:'edge.example.com',port:443,sni:'origin.example.com',tls:true}};
+  const request={inbound_id:inbound.id,name:'Remote entrance',description:'主线路：<b>只作文字</b>',enabled:true,request_id:'v2-e2e-request-0001',profile:{address:'edge.example.com',port:443,sni:'origin.example.com',tls:true}};
   const entrance=await api('catalog/connections','POST',request),same=await api('catalog/connections','POST',request);if(entrance.node_id!==same.node_id)throw Error('duplicate node created');
-  const adopted=await api('catalog/subscriber-provisioning','POST',{request_id:'browser-native-adopt-001',subscriber:{name:'New Subscriber',enabled:true},mode:'native',inbound_id:inbound.id,credential_id:credential.id,confirmed:true});const subscriber={id:adopted.subscriber_id};if(adopted.status!=='ready')throw Error('native client not adopted');
+  const adopted=await api('catalog/subscriber-provisioning','POST',{request_id:'browser-native-adopt-001',subscriber:{name:'New Subscriber',enabled:true},mode:'native',inbound_id:inbound.id,credential_id:credential.id,confirmed:true});const subscriber={id:adopted.subscriber_id};if(adopted.status!=='ready')throw Error('native client not adopted');const grant={subscriber:{id:subscriber.id},node_ids:[entrance.node_id]};const plan=await api('catalog/subscriber-node-requests/preview','POST',grant);await api('catalog/subscriber-node-requests','POST',{...grant,request_id:'browser-native-node-grant-001',plan_hash:plan.hash,confirmed:true});
   let denied=false;try{await api('catalog/subscriber-provisioning','POST',{request_id:'browser-native-adopt-002',subscriber:{name:'Second Subscriber',enabled:true},mode:'native',inbound_id:inbound.id,credential_id:credential.id,confirmed:true})}catch{denied=true}if(!denied)throw Error('double meter ownership');
   const group=await api('catalog/groups','POST',{name:'Remote group',node_ids:[entrance.node_id],enabled:true});
   const delivery=await api('catalog/subscriptions','POST',{subscriber_id:subscriber.id,name:'Remote profile',enabled:true,format:'mihomo',group_ids:[group.id],options:{template:'full',group_name:'Remote group',default_route:'proxy'}});
-  const preview=await api('catalog/subscriptions/'+delivery.id+'/preview','POST',{});if(preview.usable!==1)throw Error('empty subscription');return{inbound:inbound.id,subscriber:subscriber.id,token:delivery.token};
+  const preview=await api('catalog/subscriptions/'+delivery.id+'/preview','POST',{});if(preview.usable!==1)throw Error('empty subscription');return{inbound:inbound.id,subscriber:subscriber.id,token:delivery.token,group:group.id};
  },data.instance.id);
  const response=await fetch(base+'/sub/'+model.token);assert.equal(response.status,200);const profile=await response.text();assert.ok(profile.includes('proxies:'));assert.ok(profile.includes('Remote entrance'));assert.equal((await fetch(base+'/sub/mihomo/removed-legacy-token')).status,404);
  // Hosts uses the persisted inventory even when core APIs are disabled/offline.
@@ -37,7 +38,7 @@ async function main(){
  const choiceSelect=page.locator('#fields [name=inbound_id]');assert.equal(await choiceSelect.locator('option').count(),4);assert.equal(await choiceSelect.locator('option[value="'+storedChoices[1]+'"]').evaluate(o=>o.disabled),true,JSON.stringify({failures,html:await choiceSelect.innerHTML()}));assert.ok((await choiceSelect.locator('option[value="'+storedChoices[1]+'"]').innerText()).includes('已退役'));
  await choiceSelect.selectOption(storedChoices[0]);await page.locator('#fields [name=entry_protocol]').selectOption('hysteria2');assert.equal(await choiceSelect.inputValue(),'');assert.equal(await choiceSelect.locator('option[value="'+storedChoices[0]+'"]').count(),0);
  await page.locator('#entry-clear-filters').click();assert.equal(await choiceSelect.locator('option').count(),4);assert.equal(await choiceSelect.inputValue(),'');await choiceSelect.selectOption(storedChoices[0]);const hyID=String(data.instance.id);await page.locator('#fields [name=entry_instance]').selectOption(hyID);assert.equal(await choiceSelect.inputValue(),'');assert.equal(await choiceSelect.locator('option').count(),2);assert.equal(await page.locator('#fields [name=entry_protocol] option[value=vless]').count(),0);await page.locator('#entry-clear-filters').click();await choiceSelect.selectOption(storedChoices[0]);await page.locator('#fields [name=entry_search]').fill('no matching inbound');assert.equal(await choiceSelect.inputValue(),'');assert.equal(await choiceSelect.locator('option').count(),1);await page.locator('#cancel-dialog').click();
-	await page.evaluate(id=>{inboundDetailID=id;location.hash='inbounddetail'},model.inbound);await page.locator('[data-action=connection-create]').first().click();await page.locator('#fields [name=name]').fill('Browser secondary');
+	await page.evaluate(id=>{inboundDetailID=id;location.hash='inbounddetail'},model.inbound);await page.locator('[data-action=connection-create]').first().click();await page.locator('#fields [name=name]').fill('Browser secondary');await page.locator('#fields [name=description]').fill('备用线路：核对 WS 转发用途\n仅作回退，不用于主线路');
 	assert.equal(await page.locator('#fields select[name^=mode_]').count(),4);assert.equal(await page.locator('#fields [name=path]').count(),0);assert.equal(await page.locator('#fields [name=xhttp_mode]').count(),0);
 	for(const [key,value]of [['address','secondary.example.com'],['port','8443'],['sni','origin.example.com']]){await page.locator('#fields [name=mode_'+key+']').selectOption('set');await page.locator('#fields [name='+key+']').fill(value)}
 	await page.locator('#fields [name=name]').click();assert.ok((await page.locator('#entry-preview').innerText()).includes('secondary.example.com'));await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open);
@@ -48,21 +49,42 @@ async function main(){
  // Existing assignments are recalled from saved subscriptions, not inferred
  // from all nodes sharing an inbound. Searching must preserve both old/new checks.
  const assignmentNodes=await page.evaluate(async inbound=>{const n=await api('catalog/nodes');return{old:n.find(n=>n.inbound_id===inbound&&n.name==='Remote entrance').id,extra:n.find(n=>n.inbound_id===inbound&&n.name==='Browser secondary').id}},model.inbound);
+ const middle=await page.evaluate(inbound=>api('catalog/connections','POST',{inbound_id:inbound,name:'Middle range fixture',enabled:true,profile:{address:'middle.example.com',port:443,sni:'origin.example.com'}}),model.inbound);
+ await page.evaluate(async data=>api('catalog/groups/'+data.group,'PATCH',{name:'Remote group',enabled:true,node_ids:[data.old,data.extra,data.middle]}),{group:model.group,middle:middle.node_id,...assignmentNodes});
+ assert.equal(await page.locator('[data-action=catalog-bindings]').count(),0);
  await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();
  await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
  const assignedBox=page.locator('[data-subscriber-node="'+assignmentNodes.old+'"]'),extraBox=page.locator('[data-subscriber-node="'+assignmentNodes.extra+'"]');
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await assignedBox.isDisabled(),true);assert.equal(await extraBox.isChecked(),false);
+ assert.equal(await page.locator('[name=subscriber_node_scope]').inputValue(),'assigned');assert.equal(await extraBox.count(),0);
+ await page.locator('[name=subscriber_node_scope]').selectOption('all');
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await assignedBox.isDisabled(),false);assert.equal(await extraBox.isChecked(),false);
+ const groupBox=page.locator('[data-subscriber-group="'+model.group+'"]');
+ assert.equal(await groupBox.isVisible(),true);
+ assert.equal(await groupBox.evaluate(box=>box.indeterminate),true);
+ await groupBox.check();assert.equal(await extraBox.isChecked(),true);
+ await groupBox.uncheck();assert.equal(await assignedBox.isChecked(),false);
+ await page.locator('[name=subscriber_node_filter]').selectOption(model.group);
+ await assignedBox.click();await extraBox.click({modifiers:['Alt']});
+ assert.equal(await page.locator('[data-subscriber-node="'+middle.node_id+'"]').isChecked(),true);
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);
+ await page.locator('[name=subscriber_node_search]').fill('Browser secondary');
+ await page.locator('#subscriber-node-remove-visible').click();
+ await page.locator('[name=subscriber_node_search]').fill('');
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),false);
+ await page.locator('[name=subscriber_node_filter]').selectOption('');
+
  await extraBox.check();await page.locator('#fields [name=subscriber_node_search]').fill('no matching node');await page.locator('#fields [name=subscriber_node_search]').fill('');
  assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);
  await page.locator('#cancel-dialog').click();await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();
  await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
+ await page.locator('[name=subscriber_node_scope]').selectOption('all');
  assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),false);
  await extraBox.check();await page.locator('#subscriber-node-preview').click();
- await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以配置'),{},{timeout:5000});
- assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('已选 1 个节点'));
+ await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以保存'),{},{timeout:5000});
+ assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('新增 1 个'));
  await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000});
  await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);assert.equal(await extraBox.isDisabled(),true);await page.locator('#cancel-dialog').click();
+ assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);assert.equal(await extraBox.isDisabled(),false);await page.locator('#cancel-dialog').click();
  // Prepare only: existing static/native subscription stays valid until a
  // separately confirmed core configuration change. No fake dynamic users.
  await page.goto(base+'/#subscribers');await page.locator('[data-action=hy-auth-prepare][data-id="'+model.inbound+'"]').click();
@@ -87,7 +109,7 @@ async function main(){
  assert.equal(await page.locator('#fields [name=mode]').count(),0);
  await page.locator('#fields [name=name]').fill('Business node subscriber');
  await page.locator('[data-subscriber-node="'+nodeFlow.node_id+'"]').check();await page.locator('#subscriber-node-preview').click();
- await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以配置'),{},{timeout:5000});
+ await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以保存'),{},{timeout:5000});
  for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'node form overflow '+width);await page.screenshot({path:path.join(output,'subscriber-node-form-'+width+'.png'),fullPage:true})}
  await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();
  await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000});
@@ -95,14 +117,48 @@ async function main(){
  assert.equal(businessUser.user.enabled,0);assert.equal(businessUser.user.node_authorization_required,1);assert.ok(businessUser.requests.some(p=>p.subscriber_id===businessUser.user.id&&p.status==='pending'));
  assert.ok(businessUser.grants.some(g=>g.subscriber_id===businessUser.user.id&&g.node_id===nodeFlow.node_id));
  await page.locator('[data-action=subscriber-node-details][data-id="'+businessUser.requests.find(p=>p.subscriber_id===businessUser.user.id).request_id+'"]').click();await page.waitForFunction(()=>document.querySelector('#edit-title').textContent==='节点认证配置详情',{},{timeout:5000});assert.ok((await page.locator('#fields').innerText()).includes('pending'));await page.locator('#cancel-dialog').click();
+ // Native-only cores deliver the original account after an explicit node plan.
+ const nativeNode=await page.evaluate(async server=>{const x=(await api('instances')).find(i=>i.core_type==='singbox');await api('instances/'+x.id,'PATCH',{server_id:server,name:x.name,core_type:'singbox',api_endpoint:x.api_endpoint,enabled:true});const b=await api('catalog/inbounds','POST',{instance_id:x.id,tag:'shared-native',profile:{protocol:'vless',transport:'ws',enabled:true}});await api('catalog/inbounds/'+b.id+'/clients','POST',{client_ref:'native-shared-fixture',uuid:'33333333-3333-4333-8333-333333333333',confirmed:true});return api('catalog/connections','POST',{inbound_id:b.id,name:'SG-3 native fixture',enabled:true,profile:{address:'native.example.com',port:443,sni:'origin.example.com'}})},data.server.id);
+ await page.goto(base+'/#subscribers');await page.locator('[data-kind=subscribers][data-action=catalog-edit]').first().click();await page.waitForFunction(()=>document.querySelector('#subscriber-node-choices'));
+ await page.locator('#fields [name=name]').fill('Native shared subscriber');await page.locator('[data-subscriber-node="'+nativeNode.node_id+'"]').check();await page.locator('#subscriber-node-preview').click();await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以保存'));assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('复用原生共享账号'));assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('不能按订阅用户独立统计'));
+ await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open);
+ const nativeUser=await page.evaluate(async()=>{const u=(await api('catalog/subscribers')).find(u=>u.name==='Native shared subscriber');return {user:u,usage:await api('catalog/subscribers/'+u.id+'/usage'),link:await api('catalog/subscribers/'+u.id+'/link','POST',{})}});assert.equal(nativeUser.user.enabled,1);assert.equal(nativeUser.usage.shared_native,true);assert.equal(nativeUser.usage.traffic_remaining_bytes,null);
+ const nativeResponse=await fetch(base+'/sub/'+nativeUser.link.token,{headers:{'User-Agent':'v2rayN/7.19.5'}});assert.equal(nativeResponse.status,200);assert.ok(Buffer.from(await nativeResponse.text(),'base64').toString().includes('33333333-3333-4333-8333-333333333333'));
+ await page.goto(base+'/#catalogsubs');await page.getByRole('columnheader',{name:'来源 IP / 依据',exact:true}).waitFor();assert.ok((await page.locator('#content').innerText()).includes('socket'));
  for(const format of ['raw','base64','mihomo','singbox']){const r=await fetch(base+'/sub/'+model.token+'?format='+format);assert.equal(r.status,200,format);assert.ok((await r.text()).length>20)}
  await page.evaluate(id=>api('instances/'+id+'/collect','POST',{}),data.instance.id);counter=3;await page.evaluate(id=>api('instances/'+id+'/collect','POST',{}),data.instance.id);
  const facts=await page.evaluate(async id=>({clients:await api('catalog/inbounds/'+id+'/clients'),traffic:await api('traffic/summary?dimension=instance&scope=user&range=all')}),model.inbound);assert.equal(facts.clients.length,1);assert.ok(facts.traffic.some(v=>v.upload===6000&&v.download===3000));
  await page.evaluate(id=>{inboundDetailID=id},model.inbound);
  const targets=['dashboard','instances','traffic','online','settings','diagnostics','hosts','nodegroups','subscribers','catalogsubs','subsettings','inbounds','inbounddetail','capabilities','logs','servers','quota','collectionstatus'];let checks=0;
  for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});for(const target of targets){await page.evaluate(t=>{location.hash=t},target);await page.waitForFunction(()=>!document.querySelector('#content').textContent.includes('正在加载'));await page.waitForTimeout(150);assert.equal(await page.locator('#content').getByText('数据加载失败',{exact:true}).count(),0,target);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${target}: overflow ${width}`);checks++}await page.evaluate(()=>{location.hash='inbounds'});await page.waitForTimeout(250);await page.screenshot({path:path.join(output,'remote-fixture-'+width+'.png'),fullPage:true})}
+ // One stable administrator-visible link follows current rights and negotiates
+ // v2rayN/Clash formats. Exercise deletion, empty selection and regrant via UI.
+ await page.goto(base+'/#subscribers');
+ await page.locator('[data-action=subscriber-link][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#token-dialog').open,{},{timeout:5000});
+ const unifiedURL=await page.locator('#token-url').inputValue();await page.locator('#close-token').click();
+ await page.locator('[data-action=subscriber-link][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#token-dialog').open,{},{timeout:5000});assert.equal(await page.locator('#token-url').inputValue(),unifiedURL);await page.locator('#close-token').click();
+ for(const [ua,format]of [['v2rayN/7.19.5','base64'],['Clash-Verge/v2.4.4','mihomo']]){const response=await fetch(unifiedURL,{headers:{'User-Agent':ua}});assert.equal(response.status,200);assert.equal(response.headers.get('x-tml-format'),format);const content=await response.text();if(format==='mihomo')assert.ok(content.includes('proxy-groups:'));else assert.ok(Buffer.from(content,'base64').toString().includes('hysteria2://'))}
+ const openAssignments=async()=>{await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000})};
+ const saveAssignments=async()=>{await page.locator('#subscriber-node-preview').click();await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以保存'),{},{timeout:5000});await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000})};
+ await openAssignments();await extraBox.uncheck();await saveAssignments();
+ let recall=await page.evaluate(id=>api('catalog/subscriber-node-assignments?subscriber_id='+id),model.subscriber);assert.equal(recall.length,1);assert.equal(recall[0].node_id,assignmentNodes.old);
+ let negotiated=await fetch(unifiedURL,{headers:{'User-Agent':'Clash-Verge/v2.4.4'}});assert.equal(negotiated.status,200);assert.ok(!(await negotiated.text()).includes('Browser secondary'));
+ await openAssignments();await page.locator('#subscriber-node-clear').click();await saveAssignments();assert.equal((await fetch(unifiedURL)).status,422);assert.equal((await fetch(base+'/sub/'+model.token)).status,422);
+ assert.equal(await page.evaluate(async id=>(await api('catalog/inbounds/'+id+'/clients')).length,model.inbound),1);
+ await openAssignments();await assignedBox.check();await saveAssignments();assert.equal((await fetch(unifiedURL,{headers:{'User-Agent':'Clash-Verge/v2.4.4'}})).status,200);assert.equal((await fetch(base+'/sub/'+model.token)).status,200);
+ await page.locator('[data-action=subscriber-link][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#token-dialog').open,{},{timeout:5000});assert.equal(await page.locator('#token-url').inputValue(),unifiedURL);await page.locator('#close-token').click();
+ await page.goto(base+'/#hosts');await page.getByRole('columnheader',{name:'备注',exact:true}).waitFor();assert.ok((await page.locator('#content').innerText()).includes('备用线路：核对 WS 转发用途\n仅作回退，不用于主线路'));assert.ok((await page.locator('#content').innerText()).includes('主线路：<b>只作文字</b>'));assert.equal(await page.locator('.endpoint-note b').count(),0);
+ // Preferred candidates are persisted resource definitions, never implicit grants.
+ const beforePreferred=await page.evaluate(async()=>({clients:(await api('catalog/credentials')).length,grants:(await api('catalog/subscriber-node-assignments')).length}));
+ await page.goto(base+'/#nodegroups');await page.locator('[data-action=preferred-generate]').first().click();await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#preferred-preview'));
+ await page.locator('#fields [name=template_node_id]').selectOption(nodeFlow.node_id);await page.locator('#fields [name=group_name]').fill('Browser preferred group');await page.locator('#fields [name=prefix]').fill('Browser preferred');await page.locator('#fields [name=limit]').fill('10');await page.locator('#fields [name=input]').fill('104.16.1.1:443#SG A\n[2606:4700::1]:8443#SG B\n104.16.1.1:443#duplicate\n127.0.0.1:443');
+ await page.locator('#preferred-preview').click();await page.waitForFunction(()=>document.querySelector('#preferred-plan').textContent.includes('生成计划：'));const preferredText=await page.locator('#preferred-plan').innerText();assert.ok(preferredText.includes('2 个候选'));assert.ok(preferredText.includes('无效 1、重复 1'));assert.ok(preferredText.includes('网络状态：未验证'));
+ for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'preferred form overflow '+width);await page.screenshot({path:path.join(output,'preferred-form-'+width+'.png'),fullPage:true})}
+ await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open);
+ const preferredFacts=await page.evaluate(async()=>({groups:await api('catalog/groups'),clients:(await api('catalog/credentials')).length,grants:(await api('catalog/subscriber-node-assignments')).length}));assert.equal(JSON.parse(preferredFacts.groups.find(g=>g.name==='Browser preferred group').node_ids).length,2);assert.equal(preferredFacts.clients,beforePreferred.clients);assert.equal(preferredFacts.grants,beforePreferred.grants);
  const nav=await page.locator('#sidebar').innerText();for(const removed of ['旧版','全局节点库','配置调和','重复数据修复','托管用户'])assert.ok(!nav.includes(removed));
  await page.evaluate(()=>{location.hash='instances'});await page.getByRole('button',{name:'接入实例',exact:false}).click();assert.equal(await page.locator('#fields [name=config_path]').count(),0);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.locator('#cancel-dialog').click();
- assert.deepEqual(failures,[]);console.log(`PASS: API-only empty onboarding, manual inbound/client, idempotent entry/node, unique meter owner, 4 renderers, HY HTTP-auth preparation without phantom users or native subscription breakage, HY directional fixture traffic, v2.1 existing-assignment recall/search/reopen/delta-submit and node-only creation/preview/pending tasks and 3 form viewports, ${checks} responsive page checks; no configuration mounts or core writes`);
+ assert.deepEqual(failures,[]);console.log(`PASS: API-only empty onboarding, manual inbound/client, idempotent entry/node, unique meter owner, 4 renderers, HY HTTP-auth preparation without phantom users or native subscription breakage, HY directional fixture traffic, v2.3 preferred generation UI/transaction/no implicit grants and 3 additional form viewports; native shared delivery and access IP column; no implicit grant on group/Host creation, visible escaped notes, no credential-management entry, node deletion/clear/regrant, repeatable encrypted unified URL, UA negotiation and existing-assignment recall/search/reopen and node-only creation/preview/pending tasks and 3 form viewports, ${checks} responsive page checks; no configuration mounts or core writes`);
 }
 main().catch(e=>{console.error(e);console.error('Browser errors:',failures);console.error(logs);process.exitCode=1}).finally(async()=>{if(browser)await browser.close();if(backend)backend.kill();fixture.close()});
+

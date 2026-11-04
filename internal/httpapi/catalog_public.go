@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"mime"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -36,6 +35,7 @@ func (a *API) catalogPublicHandler() http.HandlerFunc {
 	uaPattern := regexp.MustCompile(`(?i)^(clash-verge|mihomo|v2rayn|sing-box|mozilla)(?:/[vV]?[0-9.]{1,20})?`)
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Vary", "User-Agent, Accept")
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		settings, e := subscription.LoadSettings(ctx, a.Store)
@@ -43,7 +43,7 @@ func (a *API) catalogPublicHandler() http.HandlerFunc {
 			http.Error(w, "订阅设置不可用", 503)
 			return
 		}
-		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		ip, peerIP, ipSource := a.subscriptionClientIP(r)
 		m := hmac.New(sha256.New, key)
 		m.Write([]byte(ip))
 		ipHash := hex.EncodeToString(m.Sum(nil))
@@ -64,7 +64,7 @@ func (a *API) catalogPublicHandler() http.HandlerFunc {
 			attempts[ipHash] = v
 		}
 		mu.Unlock()
-		format := r.URL.Query().Get("format")
+		format := subscription.RequestFormat(r.URL.Query().Get("format"), r.UserAgent(), r.Header.Get("Accept"))
 		status, code := 200, "ok"
 		var d subscription.CatalogDefinition
 		var res subscription.RenderResult
@@ -87,7 +87,7 @@ func (a *API) catalogPublicHandler() http.HandlerFunc {
 		}
 		logFormat := format
 		if logFormat == "" {
-			logFormat = d.Format
+			logFormat = subscription.RenderFormat(d.Format)
 		}
 		if !subscription.ValidFormat(logFormat) {
 			logFormat = "unknown"
@@ -102,7 +102,7 @@ func (a *API) catalogPublicHandler() http.HandlerFunc {
 		}
 		auditCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		defer stop()
-		_, _ = a.Store.DB.ExecContext(auditCtx, "INSERT INTO subscription_access_logs(subscription_id,format,accessed_at,status_code,error_code,user_agent,client_ip_hash) VALUES(?,?,?,?,?,?,?)", subscriptionID, logFormat, storage.Stamp(now), status, code, ua, ipHash)
+		_, _ = a.Store.DB.ExecContext(auditCtx, "INSERT INTO subscription_access_logs(subscription_id,format,accessed_at,status_code,error_code,user_agent,client_ip_hash,client_ip,peer_ip,ip_source) VALUES(?,?,?,?,?,?,?,?,?,?)", subscriptionID, logFormat, storage.Stamp(now), status, code, ua, ipHash, ip, peerIP, ipSource)
 		if d.Usage != nil {
 			setQuotaHeaders(w, *d.Usage)
 		}
@@ -115,6 +115,7 @@ func (a *API) catalogPublicHandler() http.HandlerFunc {
 		}
 		_, _ = a.Store.DB.ExecContext(ctx, "UPDATE catalog_subscriptions SET last_access_at=? WHERE id=?", storage.Stamp(now), d.ID)
 		w.Header().Set("Content-Type", res.ContentType)
+		w.Header().Set("X-TML-Format", logFormat)
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("X-TML-Filtered-Nodes", strconv.Itoa(len(res.Rejected)))
 		w.Header().Set("profile-update-interval", strconv.Itoa(settings.UpdateInterval))

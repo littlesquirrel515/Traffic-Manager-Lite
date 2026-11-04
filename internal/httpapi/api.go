@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"traffic-manager-lite/internal/catalog"
 	"traffic-manager-lite/internal/collector"
 	"traffic-manager-lite/internal/config"
 	"traffic-manager-lite/internal/discovery"
@@ -20,16 +21,18 @@ import (
 )
 
 type API struct {
-	Store     *storage.Store
-	Scheduler *collector.Scheduler
-	Config    config.Config
-	Auth      *security.Auth
+	Store         *storage.Store
+	Scheduler     *collector.Scheduler
+	PreferredSync *catalog.PreferredSync
+	Config        config.Config
+	Auth          *security.Auth
 }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	admin := http.NewServeMux()
 	a.catalogRoutes(admin)
+	a.preferredSyncRoutes(admin)
 	a.remoteRoutes(admin)
 	a.subscriberProvisioningRoutes(admin)
 	a.hysteriaAuthRoutes(mux, admin)

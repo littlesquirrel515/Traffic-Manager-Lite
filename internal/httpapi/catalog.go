@@ -19,6 +19,7 @@ func catalogResult(w http.ResponseWriter, v any, e error) {
 	result(w, v, e)
 }
 func (a *API) catalogRoutes(admin *http.ServeMux) {
+	a.preferredRoutes(admin)
 	a.quotaRoutes(admin)
 	a.inboundEndpointRoutes(admin)
 	admin.HandleFunc("POST /api/v1/catalog/nodes/batch", func(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +134,7 @@ func (a *API) catalogRoutes(admin *http.ServeMux) {
 		})
 	}
 	admin.HandleFunc("GET /api/v1/catalog/groups", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, `SELECT g.*,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM node_group_members WHERE group_id=g.id ORDER BY sort_order,node_id)) node_ids,(SELECT count(*) FROM catalog_subscription_groups WHERE group_id=g.id) references_count FROM node_groups g ORDER BY sort_order,name,id`)
+		a.rows(w, r, `SELECT g.*,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM node_group_members WHERE group_id=g.id ORDER BY sort_order,node_id)) node_ids,(SELECT count(*) FROM catalog_subscription_groups WHERE group_id=g.id) references_count,(SELECT count(DISTINCT a.subscriber_id) FROM subscriber_node_grants a JOIN node_group_members m ON m.node_id=a.node_id WHERE m.group_id=g.id AND NOT EXISTS (SELECT 1 FROM subscriber_node_revocations r WHERE r.subscriber_id=a.subscriber_id AND r.node_id=a.node_id)) subscriber_count FROM node_groups g ORDER BY sort_order,name,id`)
 	})
 	for _, method := range []string{"POST /api/v1/catalog/groups", "PATCH /api/v1/catalog/groups/{id}"} {
 		admin.HandleFunc(method, func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +194,7 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 			result(w, nil, e)
 			return
 		}
-		render, e := subscription.Render(r.Context(), definition.Format, nodes, definition.Options)
+		render, e := subscription.Render(r.Context(), subscription.RenderFormat(definition.Format), nodes, definition.Options)
 		if e != nil {
 			result(w, nil, e)
 			return
@@ -240,7 +241,7 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 		result(w, map[string]bool{"deleted": e == nil}, e)
 	})
 	admin.HandleFunc("GET /api/v1/catalog/subscriptions", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, `SELECT s.id,s.subscriber_id,s.name,s.token_version,s.enabled,s.expires_at,s.format,s.options_json,s.last_access_at,s.created_at,s.updated_at,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM catalog_subscription_nodes WHERE subscription_id=s.id ORDER BY sort_order,node_id)) node_ids,(SELECT json_group_array(group_id) FROM (SELECT group_id FROM catalog_subscription_groups WHERE subscription_id=s.id ORDER BY sort_order,group_id)) group_ids FROM catalog_subscriptions s ORDER BY name,id`)
+		a.rows(w, r, `SELECT s.id,s.subscriber_id,s.name,s.token_version,s.enabled,s.expires_at,s.format,s.options_json,s.last_access_at,s.created_at,s.updated_at,EXISTS(SELECT 1 FROM subscriber_unified_links u WHERE u.subscription_id=s.id) unified,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM catalog_subscription_nodes WHERE subscription_id=s.id ORDER BY sort_order,node_id)) node_ids,(SELECT json_group_array(group_id) FROM (SELECT group_id FROM catalog_subscription_groups WHERE subscription_id=s.id ORDER BY sort_order,group_id)) group_ids FROM catalog_subscriptions s ORDER BY name,id`)
 	})
 	admin.HandleFunc("GET /api/v1/catalog/subscriptions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		d, e := subscription.CatalogSubscription(r.Context(), a.Store.DB, r.PathValue("id"))
@@ -254,6 +255,9 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 			}
 			d.ID = r.PathValue("id")
 			id, t, e := subscription.SaveCatalogSubscription(r.Context(), a.Store, d)
+			if e == nil && t != "" && a.Config.ManagedKeyFile != "" {
+				e = subscription.PersistVisibleToken(r.Context(), a.Store, a.Config.ManagedKeyFile, id, t)
+			}
 			result(w, map[string]string{"id": id, "token": t}, e)
 		})
 	}
@@ -275,8 +279,23 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 		result(w, p, e)
 	})
 	admin.HandleFunc("POST /api/v1/catalog/subscriptions/{id}/rotate-token", func(w http.ResponseWriter, r *http.Request) {
+		if a.Config.ManagedKeyFile != "" {
+			v, e := subscription.RotateVisibleLink(r.Context(), a.Store, a.Config.ManagedKeyFile, r.PathValue("id"))
+			result(w, v, e)
+			return
+		}
 		t, e := subscription.RotateCatalog(r.Context(), a.Store, r.PathValue("id"))
 		result(w, map[string]string{"token": t}, e)
+	})
+	admin.HandleFunc("POST /api/v1/catalog/subscriptions/{id}/link", func(w http.ResponseWriter, r *http.Request) {
+		v, e := subscription.VisibleLink(r.Context(), a.Store, a.Config.ManagedKeyFile, r.PathValue("id"))
+		w.Header().Set("Cache-Control", "private, no-store")
+		result(w, v, e)
+	})
+	admin.HandleFunc("POST /api/v1/catalog/subscribers/{id}/link", func(w http.ResponseWriter, r *http.Request) {
+		v, e := subscription.UnifiedLink(r.Context(), a.Store, a.Config.ManagedKeyFile, r.PathValue("id"))
+		w.Header().Set("Cache-Control", "private, no-store")
+		result(w, v, e)
 	})
 	admin.HandleFunc("DELETE /api/v1/catalog/subscriptions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		_, e := a.Store.DB.ExecContext(r.Context(), "DELETE FROM catalog_subscriptions WHERE id=?", r.PathValue("id"))

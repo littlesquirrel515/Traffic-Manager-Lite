@@ -33,15 +33,16 @@ type PlannedNode struct {
 	InboundID string `json:"inbound_id"`
 }
 type NodeTarget struct {
-	InboundID    string `json:"inbound_id"`
-	InstanceName string `json:"instance_name"`
-	CoreType     string `json:"core_type"`
-	Endpoint     string `json:"endpoint"`
-	Tag          string `json:"tag"`
-	Protocol     string `json:"protocol"`
-	CredentialID string `json:"credential_id,omitempty"`
-	Status       string `json:"status"`
-	Reason       string `json:"reason"`
+	ExistingRequest string `json:"existing_request,omitempty"`
+	InboundID       string `json:"inbound_id"`
+	InstanceName    string `json:"instance_name"`
+	CoreType        string `json:"core_type"`
+	Endpoint        string `json:"endpoint"`
+	Tag             string `json:"tag"`
+	Protocol        string `json:"protocol"`
+	CredentialID    string `json:"credential_id,omitempty"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason"`
 }
 type NodePlan struct {
 	Hash    string        `json:"hash"`
@@ -123,7 +124,13 @@ func (s Service) planNodes(ctx context.Context, q catalog.Query, d NodeRequest) 
 	definitions := []catalog.Node{}
 	for _, id := range ids {
 		if assigned[id] {
-			continue
+			repair, err := needsNativeBinding(ctx, q, d.Subscriber.ID, id)
+			if err != nil {
+				return p, err
+			}
+			if !repair {
+				continue
+			}
 		}
 		n, e := catalog.ResolveDefinition(ctx, q, id)
 		if e != nil {
@@ -159,31 +166,56 @@ func (s Service) planNodes(ctx context.Context, q catalog.Query, d NodeRequest) 
 			}
 			if e == sql.ErrNoRows {
 				var count int
+				if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_credentials WHERE subscriber_id=? AND inbound_id=?", d.Subscriber.ID, t.InboundID).Scan(&count); e != nil {
+					return p, e
+				}
+				if count > 0 {
+					t.Status = "blocked"
+					t.Reason = "已有认证绑定已停用或不可用，请先复核；不自动替换管理员设置"
+				}
 				if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_provisioning WHERE subscriber_id=? AND inbound_id=?", d.Subscriber.ID, t.InboundID).Scan(&count); e != nil {
 					return p, e
 				}
 				if count > 0 {
 					t.Status = "blocked"
 					t.Reason = "已有配置任务或已停用的绑定，请先在原任务处理"
+					var origin, state, endpoint, tag, protocol, prior string
+					if err := q.QueryRowContext(ctx, `SELECT request_id,origin,status,target_endpoint,target_tag,target_protocol FROM subscriber_provisioning WHERE subscriber_id=? AND inbound_id=?`, d.Subscriber.ID, t.InboundID).Scan(&prior, &origin, &state, &endpoint, &tag, &protocol); err == nil && origin == "managed" && state != "ready" && endpoint == t.Endpoint && tag == t.Tag && protocol == t.Protocol {
+						t.Status = "resume"
+						t.ExistingRequest = prior
+						t.Reason = "重试此前保存的认证任务，不生成重复账号"
+					}
 				}
 				if e = q.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_tasks t JOIN subscriber_node_requests p ON p.request_id=t.request_id WHERE p.subscriber_id=? AND t.inbound_id=? AND p.status!='ready'`, d.Subscriber.ID, t.InboundID).Scan(&count); e != nil {
 					return p, e
 				}
-				if count > 0 {
+				if count > 0 && t.Status != "resume" {
 					t.Status = "blocked"
 					t.Reason = "此节点来源已有待完成的节点配置任务，请先重试原任务"
 				}
 			}
 		}
-		if t.Status == "create" {
+		if t.Status == "create" || t.Status == "resume" {
 			switch {
 			case t.CoreType == "xray" && (t.Protocol == "vless" || t.Protocol == "vmess" || t.Protocol == "trojan"):
 				t.Reason = "创建独立认证并回读确认；同一来源的多个节点仅配置一次"
 			case t.CoreType == "hysteria2" && t.Protocol == "hysteria2" && hysteriaReady(ctx, q, t.InboundID):
 				t.Reason = "通过已确认的 HTTP 认证后端登记账户"
 			default:
-				t.Status = "blocked"
-				t.Reason = "此节点尚无可用的动态用户配置能力；请先纳管已有原生用户或配置认证后端"
+				credential, err := nativeCandidate(ctx, q, t.InboundID)
+				if err != nil {
+					return p, err
+				}
+				if credential != "" && t.Status == "create" {
+					t.Status, t.CredentialID = "shared_native", credential
+					t.Reason = "复用已登记的原生共享账号，不创建 Client；不能按订阅用户独立统计此账号流量，精确配额不可用"
+				} else {
+					t.Status = "blocked"
+					t.Reason = "动态配置不可用，且未找到唯一可用的原生账号；请登记或明确纳管原生账号后重试"
+				}
+			}
+			if t.Status == "resume" {
+				t.Reason = "复用原任务的加密认证信息并重试，避免重复账号"
 			}
 		}
 		if t.Status == "blocked" {
@@ -237,6 +269,13 @@ func (s Service) CreateNodes(ctx context.Context, d NodeRequest) (NodeResult, er
 	// A new user and all node authorizations/target tasks commit together. No core
 	// operation occurs until this durable plan has committed.
 	save := func(tx *sql.Tx, id string) error {
+		var superseded int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_edits WHERE json_extract(NULLIF(addition_json,''),'$.request_id')=? AND status='superseded'`, d.RequestID).Scan(&superseded); err != nil {
+			return err
+		}
+		if superseded > 0 {
+			return fmt.Errorf("节点配置已被后续权限变更替代，未恢复旧授权")
+		}
 		plan, err := s.planNodes(ctx, tx, d)
 		if err != nil {
 			return err
@@ -256,6 +295,9 @@ func (s Service) CreateNodes(ctx context.Context, d NodeRequest) (NodeResult, er
 			return err
 		}
 		for _, n := range plan.Nodes {
+			if _, err = tx.ExecContext(ctx, "DELETE FROM subscriber_node_revocations WHERE subscriber_id=? AND node_id=?", id, n.ID); err != nil {
+				return err
+			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO subscriber_node_grants(subscriber_id,node_id,inbound_id,created_at) VALUES(?,?,?,?) ON CONFLICT(subscriber_id,node_id) DO NOTHING`, id, n.ID, n.InboundID, storage.Stamp(time.Now())); err != nil {
 				return err
 			}
@@ -322,6 +364,7 @@ func (s Service) RetryNodes(ctx context.Context, request string) (NodeResult, er
 	// Bounded synchronous work; unfinished targets stay durable and retryable.
 	work, cancel := context.WithTimeout(ctx, 18*time.Second)
 	defer cancel()
+	cancelled := 0
 	// Least-recently attempted targets go first so an unavailable core cannot
 	// starve later targets across bounded retries.
 	attempts := map[string]string{}
@@ -352,6 +395,15 @@ func (s Service) RetryNodes(ctx context.Context, request string) (NodeResult, er
 		if work.Err() != nil {
 			break
 		}
+		var authorized int
+		if e = s.Store.DB.QueryRowContext(work, `SELECT count(*) FROM subscriber_node_grants g JOIN node_profiles n ON n.id=g.node_id AND n.inbound_id=g.inbound_id WHERE g.subscriber_id=? AND g.inbound_id=? AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations v WHERE v.subscriber_id=g.subscriber_id AND v.node_id=g.node_id)`, r.SubscriberID, t.InboundID).Scan(&authorized); e != nil {
+			return r, e
+		}
+		if authorized == 0 {
+			cancelled++
+			record(t.InboundID, "cancelled", "该来源的节点授权已全部取消，未配置或恢复 Client")
+			continue
+		}
 		var valid int
 		e = s.Store.DB.QueryRowContext(work, `SELECT count(*) FROM catalog_inbounds b JOIN instances x ON x.id=b.instance_id JOIN servers v ON v.id=x.server_id WHERE b.id=? AND b.tag=? AND b.protocol=? AND x.api_endpoint=? AND b.present=1 AND b.review=0 AND b.retired=0 AND x.enabled=1 AND v.enabled=1`, t.InboundID, t.Tag, t.Protocol, t.Endpoint).Scan(&valid)
 		if e != nil || valid != 1 {
@@ -362,10 +414,23 @@ func (s Service) RetryNodes(ctx context.Context, request string) (NodeResult, er
 			var n int
 			e = s.Store.DB.QueryRowContext(work, `SELECT count(*) FROM subscriber_credentials b JOIN credential_material c ON c.id=b.credential_id WHERE b.subscriber_id=? AND b.inbound_id=? AND b.credential_id=? AND b.enabled=1 AND c.status='available'`, r.SubscriberID, t.InboundID, t.CredentialID).Scan(&n)
 			if e == nil && n == 1 {
+				_, e = s.Store.DB.ExecContext(work, `UPDATE remote_runtime_users SET restore_authorized=1 WHERE inbound_id=? AND api_endpoint=? AND core_tag=? AND protocol=? AND EXISTS(SELECT 1 FROM subscriber_provisioning p WHERE p.subscriber_id=? AND p.inbound_id=remote_runtime_users.inbound_id AND p.client_ref=remote_runtime_users.client_ref AND p.origin='managed' AND p.status='ready')`, t.InboundID, t.Endpoint, t.Tag, t.Protocol, r.SubscriberID)
+				if e != nil {
+					return r, e
+				}
 				r.ReadyCount++
 				record(t.InboundID, "ready", "已复用此用户的现有认证")
 			} else {
 				record(t.InboundID, "pending", "已有认证已停用、移除或改变，请先复核绑定")
+			}
+			continue
+		}
+		if t.Status == "shared_native" {
+			if err := s.bindSharedNative(work, r.SubscriberID, t); err != nil {
+				record(t.InboundID, "pending", "原生共享账号绑定未完成，请核查原生账号及已有绑定后重试")
+			} else {
+				r.ReadyCount++
+				record(t.InboundID, "ready", "已复用原生共享账号；不创建 Client，不重复计费，无法独立归属流量")
 			}
 			continue
 		}
@@ -374,9 +439,18 @@ func (s Service) RetryNodes(ctx context.Context, request string) (NodeResult, er
 			return r, e
 		}
 		childCtx, done := context.WithTimeout(work, 4*time.Second)
+		if t.ExistingRequest != "" {
+			child = t.ExistingRequest
+		}
 		var prior string
 		_ = s.Store.DB.QueryRowContext(childCtx, "SELECT status FROM subscriber_provisioning WHERE request_id=?", child).Scan(&prior)
-		v, err := s.Create(childCtx, Request{RequestID: child, Subscriber: subscription.Subscriber{ID: r.SubscriberID}, InboundID: t.InboundID, Mode: "managed", Confirmed: true})
+		var v Result
+		var err error
+		if t.ExistingRequest != "" {
+			v, err = s.Retry(childCtx, child)
+		} else {
+			v, err = s.Create(childCtx, Request{RequestID: child, Subscriber: subscription.Subscriber{ID: r.SubscriberID}, InboundID: t.InboundID, Mode: "managed", Confirmed: true})
+		}
 		if err == nil && v.Status == "ready" && prior == "ready" {
 			// An incomplete parent may outlive a core restart. Read the actual
 			// account again using the original encrypted Desired and precise target.
@@ -409,9 +483,12 @@ func (s Service) RetryNodes(ctx context.Context, request string) (NodeResult, er
 		return r, e
 	}
 	defer tx.Rollback()
-	if r.ReadyCount == r.TargetCount {
+	if r.ReadyCount+cancelled == r.TargetCount {
 		r.Status = "ready"
-		if enabled {
+		if cancelled > 0 {
+			r.Message = fmt.Sprintf("已完成 %d 个认证目标，另有 %d 个目标因取消节点分配而跳过；保留用户当前启用状态", r.ReadyCount, cancelled)
+		}
+		if enabled && cancelled == 0 {
 			_, e = tx.ExecContext(finalCtx, "UPDATE subscribers SET enabled=1,updated_at=? WHERE id=? AND quota_revision=?", storage.Stamp(time.Now()), r.SubscriberID, revision)
 			if e != nil {
 				return r, e

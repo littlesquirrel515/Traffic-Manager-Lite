@@ -30,6 +30,7 @@ type Binding struct {
 	Billable     *bool   `json:"billable,omitempty"`
 }
 type CatalogDefinition struct {
+	Unified      bool          `json:"unified,omitempty"`
 	ID           string        `json:"id"`
 	SubscriberID string        `json:"subscriber_id"`
 	Name         string        `json:"name"`
@@ -202,6 +203,7 @@ type ResolvedClientNode struct {
 	Tags         []string          `json:"tags"`
 	FieldSources map[string]string `json:"field_sources"`
 	CredentialID string            `json:"-"`
+	Groups       []string          `json:"-"`
 }
 type CatalogPreview struct {
 	Selected    int                  `json:"selected"`
@@ -258,6 +260,9 @@ func expand(ctx context.Context, q catalog.Query, d CatalogDefinition) ([]string
 	}
 	return ids, nil
 }
+func ExpandNodeSelection(ctx context.Context, q catalog.Query, nodes, groups []string) ([]string, error) {
+	return expand(ctx, q, CatalogDefinition{NodeIDs: nodes, GroupIDs: groups})
+}
 func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) ([]ResolvedClientNode, []Rejection, int, error) {
 	ids, e := expand(ctx, q, d)
 	if e != nil {
@@ -282,6 +287,14 @@ func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) (
 			rejected = append(rejected, Rejection{id, "disabled：订阅用户已停用"})
 			continue
 		}
+		var revoked int
+		if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_node_revocations WHERE subscriber_id=? AND node_id=?", d.SubscriberID, id).Scan(&revoked); e != nil {
+			return nil, nil, 0, e
+		}
+		if revoked > 0 {
+			rejected = append(rejected, Rejection{id, "node_revoked：此节点已取消分配"})
+			continue
+		}
 		if nodeAuthorizationRequired {
 			var granted int
 			if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_node_grants WHERE subscriber_id=? AND node_id=? AND inbound_id=?", d.SubscriberID, id, n.InboundID).Scan(&granted); e != nil {
@@ -294,6 +307,14 @@ func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) (
 		}
 		if n.Status != "ready" && !(n.Source == "manual" && n.Status == "needs_review") {
 			rejected = append(rejected, Rejection{id, n.Status})
+			continue
+		}
+		available, err := catalog.SyncSlotAvailable(ctx, q, id)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		if !available {
+			rejected = append(rejected, Rejection{id, "preferred_waiting：同步候选不足"})
 			continue
 		}
 		var auth, status, credentialID string
@@ -357,6 +378,32 @@ func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) (
 		}
 		out = append(out, ResolvedClientNode{ID: id, Profile: n.Profile, Tags: n.Tags, FieldSources: n.Sources, CredentialID: credentialID})
 	}
+	// Group metadata describes already resolved nodes only; it never grants access.
+	byID := make(map[string]int, len(out))
+	for i := range out {
+		byID[out[i].ID] = i
+	}
+	if len(byID) > 0 {
+		rows, err := q.QueryContext(ctx, `SELECT m.node_id,g.name FROM node_group_members m JOIN node_groups g ON g.id=m.group_id WHERE g.enabled=1 ORDER BY g.sort_order,g.name,g.id,m.sort_order,m.node_id`)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		for rows.Next() {
+			var id, name string
+			if err = rows.Scan(&id, &name); err != nil {
+				rows.Close()
+				return nil, nil, 0, err
+			}
+			if i, ok := byID[id]; ok {
+				out[i].Groups = append(out[i].Groups, name)
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, nil, 0, err
+		}
+	}
 	return out, rejected, len(ids), nil
 }
 func CatalogPreviewFor(ctx context.Context, q catalog.Query, d CatalogDefinition) (CatalogPreview, error) {
@@ -365,7 +412,7 @@ func CatalogPreviewFor(ctx context.Context, q catalog.Query, d CatalogDefinition
 	if e != nil {
 		return p, e
 	}
-	render, e := Render(ctx, d.Format, nodes, d.Options)
+	render, e := Render(ctx, RenderFormat(d.Format), nodes, d.Options)
 	if e != nil {
 		return p, e
 	}
@@ -380,7 +427,7 @@ func CatalogPreviewFor(ctx context.Context, q catalog.Query, d CatalogDefinition
 		n.CredentialID = ""
 		masked[i] = n
 	}
-	safe, e := Render(ctx, d.Format, masked, d.Options)
+	safe, e := Render(ctx, RenderFormat(d.Format), masked, d.Options)
 	if e != nil {
 		return p, e
 	}
@@ -390,7 +437,7 @@ func CatalogPreviewFor(ctx context.Context, q catalog.Query, d CatalogDefinition
 	return p, nil
 }
 func SaveCatalogSubscription(ctx context.Context, s *storage.Store, d CatalogDefinition) (string, string, error) {
-	if strings.TrimSpace(d.Name) == "" || len(d.Name) > 200 || !ValidFormat(d.Format) || strings.ContainsAny(d.Name, "\r\n\x00") {
+	if strings.TrimSpace(d.Name) == "" || len(d.Name) > 200 || !ValidDeliveryFormat(d.Format) || strings.ContainsAny(d.Name, "\r\n\x00") {
 		return "", "", fmt.Errorf("订阅字段无效")
 	}
 	if d.ExpiresAt != nil && *d.ExpiresAt != "" {
@@ -412,6 +459,16 @@ func SaveCatalogSubscription(ctx context.Context, s *storage.Store, d CatalogDef
 		return "", "", e
 	}
 	defer tx.Rollback()
+	if d.ID != "" {
+		var owner string
+		err := tx.QueryRowContext(ctx, "SELECT subscriber_id FROM subscriber_unified_links WHERE subscription_id=?", d.ID).Scan(&owner)
+		if err != nil && err != sql.ErrNoRows {
+			return "", "", err
+		}
+		if err == nil {
+			return "", "", fmt.Errorf("统一订阅跟随用户节点权限；请在订阅用户中修改节点或查看链接，不能独立修改归属与节点范围")
+		}
+	}
 	p, e := CatalogPreviewFor(ctx, tx, d)
 	if e != nil {
 		return "", "", e
@@ -499,6 +556,22 @@ func CatalogSubscription(ctx context.Context, q catalog.Query, id string) (Catal
 			return d, e
 		}
 	}
+	var unified int
+	if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_unified_links WHERE subscription_id=? AND subscriber_id=?", id, d.SubscriberID).Scan(&unified); e != nil {
+		return d, e
+	}
+	if unified > 0 {
+		d.Unified = true
+		assignments, err := NodeAssignments(ctx, q, d.SubscriberID)
+		if err != nil {
+			return d, err
+		}
+		d.NodeIDs = []string{}
+		d.GroupIDs = []string{}
+		for _, n := range assignments {
+			d.NodeIDs = append(d.NodeIDs, n.NodeID)
+		}
+	}
 	return d, nil
 }
 func RotateCatalog(ctx context.Context, s *storage.Store, id string) (string, error) {
@@ -506,7 +579,12 @@ func RotateCatalog(ctx context.Context, s *storage.Store, id string) (string, er
 	if e != nil {
 		return "", e
 	}
-	res, e := s.DB.ExecContext(ctx, "UPDATE catalog_subscriptions SET token_hash=?,token_version=token_version+1,updated_at=? WHERE id=?", h, storage.Stamp(time.Now()), id)
+	tx, e := s.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return "", e
+	}
+	defer tx.Rollback()
+	res, e := tx.ExecContext(ctx, "UPDATE catalog_subscriptions SET token_hash=?,token_version=token_version+1,updated_at=? WHERE id=?", h, storage.Stamp(time.Now()), id)
 	if e != nil {
 		return "", e
 	}
@@ -514,5 +592,8 @@ func RotateCatalog(ctx context.Context, s *storage.Store, id string) (string, er
 	if n == 0 {
 		return "", sql.ErrNoRows
 	}
-	return t, nil
+	if _, e = tx.ExecContext(ctx, "DELETE FROM subscription_link_secrets WHERE subscription_id=?", id); e != nil {
+		return "", e
+	}
+	return t, tx.Commit()
 }

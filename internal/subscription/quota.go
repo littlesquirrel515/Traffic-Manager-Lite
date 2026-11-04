@@ -46,6 +46,7 @@ type Usage struct {
 	Remaining    *int64        `json:"traffic_remaining_bytes"`
 	Completeness string        `json:"completeness"`
 	Status       string        `json:"status"`
+	SharedNative bool          `json:"shared_native"`
 	Sources      []UsageSource `json:"sources"`
 }
 type UsageSource struct {
@@ -276,6 +277,16 @@ func SubscriberUsage(ctx context.Context, q catalog.Query, id string) (Usage, er
 		}
 	}
 	u.Used = u.Upload + u.Download
+	// Shared native credentials cannot identify individual subscribers. Preserve
+	// existing ledger facts/ownership, but never advertise an exact remaining quota.
+	var shared int
+	if e = q.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_credentials b WHERE b.subscriber_id=? AND b.enabled=1 AND (b.usage_mode='shared_native' OR EXISTS(SELECT 1 FROM subscriber_credentials other WHERE other.credential_id=b.credential_id AND other.enabled=1 AND other.usage_mode='shared_native'))`, id).Scan(&shared); e != nil {
+		return u, e
+	}
+	if shared > 0 && u.Completeness == "complete" {
+		u.Completeness = "partial"
+	}
+	u.SharedNative = shared > 0
 	var enabled bool
 	if e = q.QueryRowContext(ctx, "SELECT enabled FROM subscribers WHERE id=?", id).Scan(&enabled); e != nil {
 		return u, e

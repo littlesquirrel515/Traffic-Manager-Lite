@@ -1,4 +1,14 @@
-# v2.1 当前约束（优先于下方 v1 历史）
+# v2.4 当前约束（优先于下方 v1 历史）
+
+v2.4.0：009 新增多源优选同步。明确确认后创建专属固定 Endpoint/Binding/Node，用户按原流程一次授权；后台只更新 Address/Port 和发布状态，禁止扩大权限或创建 Client。独立缓存、事务更新、保留最近发布；停用或人工改动不得覆盖。见 docs/preferred-sync-v2.4.md。
+
+v2.3.0：008 追加优选生成批次幂等/去重映射。节点模板 + TXT/CSV/公网HTTPS API/BEST_SUB 地址提取或CF随机候选，预览hash确认后事务生成Endpoint/Binding/Node及分组，沿用原授权链；不创建Client、不自动扩权、不改核心。外部认证丢弃，源请求不发送TML凭据，DNS实际拨号验证公共IP且禁重定向；随机候选未测速，网络Unknown。见 docs/preferred-subscription-v2.3.md。
+
+v2.2.2：007 追加来源 IP/peer/解析依据和 shared_native 交付绑定。仅显式可信代理解析 XFF；CF 头仅由信任官方网段的 Nginx 处理。无动态能力时复用唯一已登记原生账号，排除托管账号，不调用 AddUser、不重复 meter；共享账号无法独立计量，不能宣称精确剩余。见 docs/subscription-sources-v2.2.2.md。
+
+v2.2.1：006 固化旧组授权为节点清单，旧组成员按已保存的统一链接/订阅创建时点取快照；不自动授权新 Host，保留显式节点及撤销记录。普通创建和原生纳管均启用精确节点权限。用户页不提供手工凭据管理，配置由应用服务按节点映射统一编排；Host 新增仍不创建 Client。连接列表直接展示转义、多行备注。见 docs/subscriber-node-fix-v2.2.1.md。
+
+v2.2（2026-10-30）：005 追加迁移；节点权限可撤销和重新分配，旧链接/分组均过滤撤销，不删除核心 Client 或停止真实流量计费。用户明确要求管理员可重复查看 URL，覆盖历史“Token 仅哈希/明文一次”限制：鉴权仍用 SHA256，可查看 Token 另存 AES-GCM 密文，按管理员 POST 查看/审计；旧哈希 URL 不可逆，保留可用并提供加密别名/统一链接，不自动轮换。统一 URL 按 UA 适配 v2rayN 与 Clash Verge Rev，未知 UA 可显式格式兜底。见 docs/subscription-management-v2.2.md。
 
 v2.1 节点流程（2026-10-27）：普通订阅用户选择节点/节点组，不直接选择 Inbound；004 为追加迁移，不清库，旧用户/Token 授权保持兼容。组按确认时成员快照授权，新用户输出逐节点验权；同来源去重 Client 和计费，父任务全部完成才启用，重试不得覆盖管理员停用。原生纳管保留高级流程。见 docs/subscriber-node-workflow-v2.1.md。
 

@@ -97,6 +97,16 @@ func CreateConnection(ctx context.Context, s *storage.Store, d Connection) (Conn
 		return result, e
 	}
 	defer tx.Rollback()
+	result, e = createConnection(ctx, tx, d)
+	if e != nil {
+		return result, e
+	}
+	return result, tx.Commit()
+}
+
+func createConnection(ctx context.Context, tx *sql.Tx, d Connection) (ConnectionResult, error) {
+	var result ConnectionResult
+	var e error
 	requestHash := fmt.Sprintf("%x", sha256.Sum256([]byte(encode(d))))
 	if d.RequestID != "" {
 		if len(d.RequestID) < 16 || len(d.RequestID) > 64 {
@@ -204,7 +214,7 @@ func CreateConnection(ctx context.Context, s *storage.Store, d Connection) (Conn
 			return result, e
 		}
 	}
-	return result, tx.Commit()
+	return result, nil
 }
 func validateBindingOverrides(v map[string]Override) error {
 	if len(v) > len(endpointFields) {

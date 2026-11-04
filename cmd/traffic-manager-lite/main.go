@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 	_ "time/tzdata"
+	"traffic-manager-lite/internal/catalog"
 	"traffic-manager-lite/internal/collector"
 	"traffic-manager-lite/internal/config"
 	"traffic-manager-lite/internal/httpapi"
@@ -84,7 +85,11 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	scheduler := collector.New(ctx, store, c)
-	api := &httpapi.API{Store: store, Scheduler: scheduler, Config: c, Auth: auth}
+	syncer := &catalog.PreferredSync{Store: store}
+	syncDone := make(chan struct{})
+	go func() { defer close(syncDone); syncer.Run(ctx) }()
+	defer func() { cancel(); <-syncDone }()
+	api := &httpapi.API{PreferredSync: syncer, Store: store, Scheduler: scheduler, Config: c, Auth: auth}
 	server := &http.Server{Addr: c.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
 	done := make(chan struct{})
 	go func() { defer close(done); scheduler.Run() }()

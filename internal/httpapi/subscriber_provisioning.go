@@ -8,6 +8,29 @@ import (
 
 func (a *API) subscriberProvisioningRoutes(admin *http.ServeMux) {
 	service := subscriberprovision.Service{Store: a.Store, Config: a.Config}
+	admin.HandleFunc("POST /api/v1/catalog/subscriber-node-edits/preview", func(w http.ResponseWriter, r *http.Request) {
+		var d subscriberprovision.NodeEditRequest
+		if !body(w, r, &d) {
+			return
+		}
+		v, e := service.PreviewNodeEdit(r.Context(), d)
+		result(w, v, e)
+	})
+	admin.HandleFunc("POST /api/v1/catalog/subscriber-node-edits", func(w http.ResponseWriter, r *http.Request) {
+		var d subscriberprovision.NodeEditRequest
+		if !body(w, r, &d) {
+			return
+		}
+		v, e := service.ApplyNodeEdit(r.Context(), d)
+		result(w, v, e)
+	})
+	admin.HandleFunc("POST /api/v1/catalog/subscriber-node-edits/{request}/retry", func(w http.ResponseWriter, r *http.Request) {
+		v, e := service.RetryNodeEdit(r.Context(), r.PathValue("request"))
+		result(w, v, e)
+	})
+	admin.HandleFunc("GET /api/v1/catalog/subscriber-node-edits", func(w http.ResponseWriter, r *http.Request) {
+		a.rows(w, r, `SELECT e.request_id,e.subscriber_id,s.name subscriber_name,e.status,e.message,e.checked_at FROM subscriber_node_edits e JOIN subscribers s ON s.id=e.subscriber_id ORDER BY e.checked_at DESC`)
+	})
 	admin.HandleFunc("GET /api/v1/catalog/subscriber-node-assignments", func(w http.ResponseWriter, r *http.Request) {
 		v, e := subscription.NodeAssignments(r.Context(), a.Store.DB, r.URL.Query().Get("subscriber_id"))
 		result(w, v, e)

@@ -30,7 +30,7 @@ func LoadSettings(ctx context.Context, s *storage.Store) (Settings, error) {
 	return d, e
 }
 func SaveSettings(ctx context.Context, s *storage.Store, d Settings) error {
-	if !ValidFormat(d.DefaultFormat) || d.UpdateInterval < 1 || d.UpdateInterval > 168 || d.SyncInterval < 30 || d.SyncInterval > 86400 || d.RetentionDays < 1 || d.RetentionDays > 365 || d.RatePerMinute < 1 || d.RatePerMinute > 600 || d.DefaultSort != "explicit" {
+	if !ValidDeliveryFormat(d.DefaultFormat) || d.UpdateInterval < 1 || d.UpdateInterval > 168 || d.SyncInterval < 30 || d.SyncInterval > 86400 || d.RetentionDays < 1 || d.RetentionDays > 365 || d.RatePerMinute < 1 || d.RatePerMinute > 600 || d.DefaultSort != "explicit" {
 		return fmt.Errorf("订阅设置超出范围")
 	}
 	if d.BaseURL != "" {
@@ -54,7 +54,7 @@ func CatalogOutput(ctx context.Context, s *storage.Store, token, format string) 
 	}
 	defer tx.Rollback()
 	var id string
-	if e = tx.QueryRowContext(ctx, "SELECT id FROM catalog_subscriptions WHERE token_hash=? AND enabled=1", Hash(token)).Scan(&id); e != nil {
+	if e = tx.QueryRowContext(ctx, "SELECT id FROM catalog_subscriptions WHERE enabled=1 AND (token_hash=? OR id=(SELECT subscription_id FROM subscription_link_secrets WHERE token_hash=?))", Hash(token), Hash(token)).Scan(&id); e != nil {
 		return empty, d, e
 	}
 	d, e = CatalogSubscription(ctx, tx, id)
@@ -93,11 +93,12 @@ func CatalogOutput(ctx context.Context, s *storage.Store, token, format string) 
 		return empty, d, fmt.Errorf("subscriber_disabled")
 	}
 	if format == "" {
-		format = d.Format
+		format = RenderFormat(d.Format)
 	}
 	if !ValidFormat(format) {
 		return empty, d, fmt.Errorf("format_invalid")
 	}
+	d.Format = format
 	nodes, missing, count, e := ResolveCatalog(ctx, tx, d)
 	if e != nil {
 		return empty, d, e

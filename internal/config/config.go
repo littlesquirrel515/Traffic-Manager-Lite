@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ type Config struct {
 	Retention                                                                           int
 	Archive, SecureCookie                                                               bool
 	AllowedTargets                                                                      []string
+	TrustedProxies                                                                      []netip.Prefix
 }
 
 func value(k, d string) string {
@@ -28,6 +30,24 @@ func Load() (Config, error) {
 	managedKeyFile := value("MANAGED_KEY_FILE", "")
 	c := Config{CoreAgentURL: value("CORE_AGENT_URL", ""), CoreAgentToken: value("CORE_AGENT_TOKEN", ""), Listen: value("LISTEN", ":8080"), DBPath: value("DB_PATH", "data/traffic.db"), BackupDir: value("BACKUP_DIR", "backups"), AdminUser: value("ADMIN_USER", "admin"), AdminPassword: value("ADMIN_PASSWORD", ""), Timezone: value("TIMEZONE", "Asia/Shanghai"), LogLevel: value("LOG_LEVEL", "info"), ConfigRoot: value("CONFIG_ROOT", "configs")}
 	c.ManagedKeyFile = managedKeyFile
+	for _, raw := range strings.Split(value("TRUSTED_PROXIES", ""), ",") {
+		if raw = strings.TrimSpace(raw); raw == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(raw)
+		if err != nil {
+			ip, e := netip.ParseAddr(raw)
+			if e != nil || ip.Zone() != "" {
+				return c, fmt.Errorf("invalid TML_TRUSTED_PROXIES")
+			}
+			ip = ip.Unmap()
+			p = netip.PrefixFrom(ip, ip.BitLen())
+		}
+		if p.Bits() == 0 {
+			return c, fmt.Errorf("TML_TRUSTED_PROXIES must not trust every address")
+		}
+		c.TrustedProxies = append(c.TrustedProxies, p.Masked())
+	}
 	for _, target := range strings.Split(os.Getenv("TML_ALLOWED_TARGETS"), ",") {
 		if target = strings.TrimSpace(target); target != "" {
 			c.AllowedTargets = append(c.AllowedTargets, target)

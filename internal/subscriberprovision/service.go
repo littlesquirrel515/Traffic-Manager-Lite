@@ -129,6 +129,13 @@ func (s Service) Create(ctx context.Context, d Request) (Result, error) {
 		credential = d.CredentialID
 	}
 	insertOperation := func(tx *sql.Tx, id string) error {
+		// Native adoption establishes credential ownership, not node permission.
+		// Every business-created subscriber uses explicit node authorization.
+		if existingID == "" {
+			if _, err := tx.ExecContext(ctx, "UPDATE subscribers SET node_authorization_required=1 WHERE id=?", id); err != nil {
+				return err
+			}
+		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO subscriber_provisioning(request_id,request_hash,subscriber_id,inbound_id,client_ref,target_endpoint,target_tag,target_protocol,origin,credential_id,desired_sealed,status,requested_enabled,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)`, d.RequestID, fingerprint, id, d.InboundID, client.Reference, endpoint, tag, protocol, d.Mode, credential, sealed, wanted, storage.Stamp(time.Now()))
 		return err
 	}
@@ -158,6 +165,15 @@ func (s Service) Retry(ctx context.Context, request string) (Result, error) {
 	e := s.Store.DB.QueryRowContext(ctx, `SELECT subscriber_id,inbound_id,client_ref,origin,credential_id,desired_sealed,status,requested_enabled FROM subscriber_provisioning WHERE request_id=?`, request).Scan(&r.SubscriberID, &inbound, &ref, &origin, &credential, &sealed, &status, &enabled)
 	if e != nil {
 		return r, e
+	}
+	var revokedTarget int
+	if e = s.Store.DB.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_tasks t WHERE t.child_request_id=? AND NOT EXISTS(SELECT 1 FROM subscriber_node_grants g JOIN node_profiles n ON n.id=g.node_id AND n.inbound_id=g.inbound_id WHERE g.subscriber_id=? AND g.inbound_id=t.inbound_id AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations v WHERE v.subscriber_id=g.subscriber_id AND v.node_id=g.node_id))`, request, r.SubscriberID).Scan(&revokedTarget); e != nil {
+		return r, e
+	}
+	if revokedTarget > 0 {
+		r.Status = "cancelled"
+		r.Message = "节点授权已取消，不重试核心 Client 配置"
+		return r, nil
 	}
 	if status == "ready" {
 		r.Status = "ready"

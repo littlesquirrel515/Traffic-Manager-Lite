@@ -101,13 +101,30 @@ func (r renderer) Render(ctx context.Context, input []ResolvedClientNode, o Rend
 		return res, nil
 	}
 	if f == "mihomo" {
-		res.Content, e = FullMihomo(b, o)
+		groupByID := make(map[string][]string, len(input))
+		for _, n := range input {
+			groupByID[n.ID] = n.Groups
+		}
+		rejectedIDs := make(map[string]bool, len(rejected))
+		for _, item := range rejected {
+			rejectedIDs[item.NodeID] = true
+		}
+		var groupsByProxy [][]string
+		for _, n := range nodes {
+			if !rejectedIDs[n.ID] {
+				groupsByProxy = append(groupsByProxy, groupByID[n.ID])
+			}
+		}
+		res.Content, e = fullMihomo(b, o, groupsByProxy)
 	} else if f == "singbox" {
 		res.Content, e = FullSingBox(b, o)
 	}
 	return res, e
 }
 func FullMihomo(b []byte, o RenderOptions) ([]byte, error) {
+	return fullMihomo(b, o, nil)
+}
+func fullMihomo(b []byte, o RenderOptions, memberships [][]string) ([]byte, error) {
 	config := map[string]any{}
 	if e := yaml.Unmarshal(b, &config); e != nil {
 		return nil, e
@@ -132,8 +149,37 @@ func FullMihomo(b []byte, o RenderOptions) ([]byte, error) {
 		names = append(names, name)
 	}
 	config["proxies"] = list
-	members := append(names, "DIRECT")
-	config["proxy-groups"] = []any{map[string]any{"name": o.GroupName, "type": "select", "proxies": members}}
+	// Names refer to the final generated proxy names, including collision renames.
+	groupNames := []string{}
+	groupMembers := map[string][]string{}
+	for i, proxyName := range names {
+		if i >= len(memberships) {
+			break
+		}
+		for _, group := range memberships[i] {
+			if _, ok := groupMembers[group]; !ok {
+				groupNames = append(groupNames, group)
+			}
+			groupMembers[group] = append(groupMembers[group], proxyName)
+		}
+	}
+	autoNames := []string{}
+	autoGroups := []any{}
+	for _, group := range groupNames {
+		name := group + " 自动选择"
+		if len(name) > 200 || strings.ContainsAny(name, ",\r\n\x00") {
+			continue
+		}
+		base := name
+		for suffix := 2; seen[name]; suffix++ {
+			name = fmt.Sprintf("%s · %d", base, suffix)
+		}
+		seen[name] = true
+		autoNames = append(autoNames, name)
+		autoGroups = append(autoGroups, map[string]any{"name": name, "type": "url-test", "proxies": groupMembers[group], "url": "https://www.gstatic.com/generate_204", "interval": 300, "tolerance": 50, "lazy": true})
+	}
+	members := append(append(names, autoNames...), "DIRECT")
+	config["proxy-groups"] = append([]any{map[string]any{"name": o.GroupName, "type": "select", "proxies": members}}, autoGroups...)
 	route := o.GroupName
 	if o.DefaultRoute == "direct" {
 		route = "DIRECT"
