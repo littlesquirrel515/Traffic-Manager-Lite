@@ -121,3 +121,23 @@ func TestMihomoAutoGroupOnlyContainsDeliveredMembers(t *testing.T) {
 		}
 	}
 }
+
+func TestMihomoChinaRoutingOrder(t *testing.T) {
+	n := node("vless", "ws")
+	r, err := Render(context.Background(), "mihomo", []ResolvedClientNode{{ID: "a", Profile: n.Profile}}, RenderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(r.Content, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	rules := cfg["rules"].([]any)
+	if len(rules) < 3 || rules[len(rules)-3] != "RULE-SET,tml-cn-domain,DIRECT" || rules[len(rules)-2] != "RULE-SET,tml-cn-ip,DIRECT" || rules[len(rules)-1] != "MATCH,节点选择" {
+		t.Fatalf("wrong route order: %v", rules)
+	}
+	providers := cfg["rule-providers"].(map[string]any)
+	if providers["tml-cn-domain"].(map[string]any)["behavior"] != "domain" || providers["tml-cn-ip"].(map[string]any)["behavior"] != "ipcidr" {
+		t.Fatal("incorrect provider behavior")
+	}
+}

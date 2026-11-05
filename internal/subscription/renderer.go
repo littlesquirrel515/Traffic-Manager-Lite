@@ -184,7 +184,11 @@ func fullMihomo(b []byte, o RenderOptions, memberships [][]string) ([]byte, erro
 	if o.DefaultRoute == "direct" {
 		route = "DIRECT"
 	}
-	config["rules"] = []string{"IP-CIDR,127.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve", "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", "IP-CIDR6,::1/128,DIRECT,no-resolve", "MATCH," + route}
+	config["rule-providers"] = map[string]any{
+		"tml-cn-domain": map[string]any{"type": "http", "behavior": "domain", "format": "mrs", "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs", "path": "./ruleset/tml-cn-domain.mrs", "interval": 86400},
+		"tml-cn-ip":     map[string]any{"type": "http", "behavior": "ipcidr", "format": "mrs", "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs", "path": "./ruleset/tml-cn-ip.mrs", "interval": 86400},
+	}
+	config["rules"] = []string{"IP-CIDR,127.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve", "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", "IP-CIDR6,::1/128,DIRECT,no-resolve", "RULE-SET,tml-cn-domain,DIRECT", "RULE-SET,tml-cn-ip,DIRECT", "MATCH," + route}
 	config["mode"] = "rule"
 	config["mixed-port"] = o.LocalPort
 	config["allow-lan"] = false
