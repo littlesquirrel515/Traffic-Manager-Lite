@@ -38,7 +38,7 @@ views.nodegroups=async()=>{
  esc(j.enabled?(syncStates[j.status]||j.status):'已暂停')+`<small>${j.config.minutes} 分钟</small>`,
  j.config.sources.map((u,i)=>`<div>${esc(new URL(u).hostname+new URL(u).pathname)}<small>${esc(syncStates[j.sources[i]?.status]||'未知')} · ${date(j.sources[i]?.last_good)}</small></div>`).join(''),
  date(j.last_success)+`<small>最近尝试 ${date(j.last_attempt)}</small>`,
- `<button data-action="preferred-sync-edit" data-id="${esc(j.id)}">编辑来源</button>`+(j.enabled?`<button data-action="preferred-sync-run" data-id="${esc(j.id)}">立即同步</button>`:'')+`<button data-action="preferred-sync-toggle" data-id="${esc(j.id)}" data-enabled="${j.enabled?'false':'true'}">${j.enabled?'暂停':'恢复'}</button>`
+ `<button data-action="preferred-sync-edit" data-id="${esc(j.id)}">编辑来源 / 容量</button>`+(j.enabled?`<button data-action="preferred-sync-run" data-id="${esc(j.id)}">立即同步</button>`:'')+`<button data-action="preferred-sync-toggle" data-id="${esc(j.id)}" data-enabled="${j.enabled?'false':'true'}">${j.enabled?'暂停':'恢复'}</button>`
  ]))}</section>`;
 };
 actions['preferred-sync-create']=async()=>{
@@ -61,9 +61,11 @@ actions['preferred-sync-toggle']=async b=>{await api('catalog/preferred-sync/'+b
 
 actions['preferred-sync-edit']=async b=>{
  const j=(await api('catalog/preferred-sync')).find(v=>v.id===b.dataset.id);if(!j)throw Error('同步组不存在');
- edit('编辑同步来源',field('sources','公开 HTTPS 来源，每行一个',j.config.sources.join('\n'),'textarea')+
+ edit('编辑同步来源与容量',field('sources','公开 HTTPS 来源，每行一个',j.config.sources.join('\n'),'textarea')+
  field('minutes','同步间隔（分钟）',j.config.minutes,'number')+
+ field('count','固定入口数量（0 = 当前全部，最多 500）',j.config.count,'number')+
+ '<p class="wide info-box">可以扩容；原入口与授权保持不变，新增节点需要重新分配给用户。目前不支持缩容。</p>'+
  field('confirmed','确认信任这些来源并允许更新已授权入口',false,'checkbox'),
- d=>api('catalog/preferred-sync/'+j.id+'/sources','PUT',{sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),minutes:d.minutes,revision:j.revision,confirmed:d.confirmed}));
+ d=>api('catalog/preferred-sync/'+j.id+'/sources','PUT',{sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),minutes:Number(d.minutes),count:Number(d.count),revision:j.revision,confirmed:d.confirmed}));
  $('#fields [name=sources]').maxLength=16400;
 };

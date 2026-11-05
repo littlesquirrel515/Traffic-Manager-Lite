@@ -175,6 +175,30 @@ func TestPreferredSyncAllSourcesCreatesMoreThanThirtyWithoutGrant(t *testing.T) 
 	if err != nil || len(ids) != 45 || job.Config.Count != 45 {
 		t.Fatalf("count=%d job=%d error=%v", len(ids), job.Config.Count, err)
 	}
+	for i := 46; i <= 60; i++ {
+		lines = append(lines, fmt.Sprintf("104.16.1.%d:443", i))
+	}
+	newCount := 55
+	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: job.Revision, Count: &newCount, Confirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	newIDs, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(newIDs) != 55 {
+		t.Fatalf("expanded %d %v", len(newIDs), err)
+	}
+	for i := range ids {
+		if ids[i] != newIDs[i] {
+			t.Fatal("existing node identity changed")
+		}
+	}
+	jobs, err := worker.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shrink := 20
+	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: jobs[0].Revision, Count: &shrink, Confirmed: true}); err == nil {
+		t.Fatal("unexpected shrink")
+	}
 	var grants int
 	if err = s.DB.QueryRow("select count(*) from subscriber_node_grants").Scan(&grants); err != nil || grants != 0 {
 		t.Fatalf("unexpected grants %d %v", grants, err)

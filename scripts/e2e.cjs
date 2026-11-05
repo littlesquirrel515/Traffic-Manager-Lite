@@ -55,36 +55,16 @@ async function main(){
  await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();
  await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
  const assignedBox=page.locator('[data-subscriber-node="'+assignmentNodes.old+'"]'),extraBox=page.locator('[data-subscriber-node="'+assignmentNodes.extra+'"]');
- assert.equal(await page.locator('[name=subscriber_node_scope]').inputValue(),'assigned');assert.equal(await extraBox.count(),0);
- await page.locator('[name=subscriber_node_scope]').selectOption('all');
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await assignedBox.isDisabled(),false);assert.equal(await extraBox.isChecked(),false);
  const groupBox=page.locator('[data-subscriber-group="'+model.group+'"]');
- assert.equal(await groupBox.isVisible(),true);
+ assert.equal(await assignedBox.count(),0);assert.equal(await extraBox.count(),0);
  assert.equal(await groupBox.evaluate(box=>box.indeterminate),true);
- await groupBox.check();assert.equal(await extraBox.isChecked(),true);
- await groupBox.uncheck();assert.equal(await assignedBox.isChecked(),false);
- await page.locator('[name=subscriber_node_filter]').selectOption(model.group);
- await assignedBox.click();await extraBox.click({modifiers:['Alt']});
- assert.equal(await page.locator('[data-subscriber-node="'+middle.node_id+'"]').isChecked(),true);
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);
- await page.locator('[name=subscriber_node_search]').fill('Browser secondary');
- await page.locator('#subscriber-node-remove-visible').click();
- await page.locator('[name=subscriber_node_search]').fill('');
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),false);
- await page.locator('[name=subscriber_node_filter]').selectOption('');
-
- await extraBox.check();await page.locator('#fields [name=subscriber_node_search]').fill('no matching node');await page.locator('#fields [name=subscriber_node_search]').fill('');
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);
- await page.locator('#cancel-dialog').click();await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();
- await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
- await page.locator('[name=subscriber_node_scope]').selectOption('all');
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),false);
- await extraBox.check();await page.locator('#subscriber-node-preview').click();
+ await page.locator('#subscriber-node-preview').click();assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('部分选中的组'));
+ await groupBox.check();await page.locator('#subscriber-node-preview').click();
  await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以保存'),{},{timeout:5000});
- assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('新增 1 个'));
+ assert.ok((await page.locator('#subscriber-node-plan').innerText()).includes('新增 2 个'));
  await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000});
  await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000});
- assert.equal(await assignedBox.isChecked(),true);assert.equal(await extraBox.isChecked(),true);assert.equal(await extraBox.isDisabled(),false);await page.locator('#cancel-dialog').click();
+ assert.equal(await groupBox.isChecked(),true);await page.locator('#cancel-dialog').click();
  // Prepare only: existing static/native subscription stays valid until a
  // separately confirmed core configuration change. No fake dynamic users.
  await page.goto(base+'/#subscribers');await page.locator('[data-action=hy-auth-prepare][data-id="'+model.inbound+'"]').click();
@@ -140,12 +120,11 @@ async function main(){
  for(const [ua,format]of [['v2rayN/7.19.5','base64'],['Clash-Verge/v2.4.4','mihomo']]){const response=await fetch(unifiedURL,{headers:{'User-Agent':ua}});assert.equal(response.status,200);assert.equal(response.headers.get('x-tml-format'),format);const content=await response.text();if(format==='mihomo')assert.ok(content.includes('proxy-groups:'));else assert.ok(Buffer.from(content,'base64').toString().includes('hysteria2://'))}
  const openAssignments=async()=>{await page.locator('[data-action=subscriber-add-client][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#editor').open&&document.querySelector('#subscriber-node-choices'),{},{timeout:5000})};
  const saveAssignments=async()=>{await page.locator('#subscriber-node-preview').click();await page.waitForFunction(()=>document.querySelector('#subscriber-node-plan').textContent.includes('可以保存'),{},{timeout:5000});await page.locator('#fields [name=confirmed]').check();await page.locator('#edit-form [type=submit]').click();await page.waitForFunction(()=>!document.querySelector('#editor').open,{},{timeout:10000})};
- await openAssignments();await extraBox.uncheck();await saveAssignments();
- let recall=await page.evaluate(id=>api('catalog/subscriber-node-assignments?subscriber_id='+id),model.subscriber);assert.equal(recall.length,1);assert.equal(recall[0].node_id,assignmentNodes.old);
- let negotiated=await fetch(unifiedURL,{headers:{'User-Agent':'Clash-Verge/v2.4.4'}});assert.equal(negotiated.status,200);assert.ok(!(await negotiated.text()).includes('Browser secondary'));
- await openAssignments();await page.locator('#subscriber-node-clear').click();await saveAssignments();assert.equal((await fetch(unifiedURL)).status,422);assert.equal((await fetch(base+'/sub/'+model.token)).status,422);
+ await openAssignments();await groupBox.uncheck();await saveAssignments();
+ let recall=await page.evaluate(id=>api('catalog/subscriber-node-assignments?subscriber_id='+id),model.subscriber);assert.equal(recall.length,0);
+ assert.equal((await fetch(unifiedURL)).status,422);
  assert.equal(await page.evaluate(async id=>(await api('catalog/inbounds/'+id+'/clients')).length,model.inbound),1);
- await openAssignments();await assignedBox.check();await saveAssignments();assert.equal((await fetch(unifiedURL,{headers:{'User-Agent':'Clash-Verge/v2.4.4'}})).status,200);assert.equal((await fetch(base+'/sub/'+model.token)).status,200);
+ await openAssignments();await groupBox.check();await saveAssignments();assert.equal((await fetch(unifiedURL)).status,200);
  await page.locator('[data-action=subscriber-link][data-id="'+model.subscriber+'"]').click();await page.waitForFunction(()=>document.querySelector('#token-dialog').open,{},{timeout:5000});assert.equal(await page.locator('#token-url').inputValue(),unifiedURL);await page.locator('#close-token').click();
  await page.goto(base+'/#hosts');await page.getByRole('columnheader',{name:'备注',exact:true}).waitFor();assert.ok((await page.locator('#content').innerText()).includes('备用线路：核对 WS 转发用途\n仅作回退，不用于主线路'));assert.ok((await page.locator('#content').innerText()).includes('主线路：<b>只作文字</b>'));assert.equal(await page.locator('.endpoint-note b').count(),0);
  // Preferred candidates are persisted resource definitions, never implicit grants.
