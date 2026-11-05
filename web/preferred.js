@@ -48,12 +48,12 @@ actions['preferred-sync-create']=async()=>{
  field('name','同步组名称','US 优选')+
  field('template_node_id','节点模板',nodes[0].id,'select',nodes.map(n=>[n.id,n.name]))+
  field('sources','公开 HTTPS 来源，每行一个','https://bestcf.pages.dev/s5gy/us.txt\nhttps://bestcf.pages.dev/tiancheng2/us.txt','textarea')+
- field('count','固定入口数量（1–30）',5,'number')+
+ field('count','固定入口数量（0 = 首次全部，最多 500）',0,'number')+
  field('minutes','同步间隔（分钟）',10,'number')+
  field('extra_port','同时允许 8443（需确认线路兼容）',false,'checkbox')+
- '<p class="wide info-box">同步只替换地址和端口，保留模板的 Host、SNI 和协议参数。创建后请给订阅用户分配该组一次；建议保留原域名节点作为备用。来源失败时保留已有结果。</p>'+
+ '<p class="wide info-box">同步只替换地址和端口，保留模板的 Host、SNI 和协议参数。填 0 时按首次读取的全部有效去重候选建立固定入口（最多 500）。之后来源增加不会自动新增入口；创建后请给订阅用户分配该组一次。建议保留原域名节点作为备用。来源失败时保留已有结果。</p>'+
  field('confirmed','确认信任这些来源并允许定时替换连接地址',false,'checkbox'),
- async d=>{await api('catalog/preferred-sync','POST',{name:d.name,template_node_id:d.template_node_id,sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),count:Number(d.count),minutes:Number(d.minutes),ports:d.extra_port?[443,8443]:[443],confirmed:!!d.confirmed});notice('同步组已创建，请到订阅用户分配该组。')});
+ async d=>{await api('catalog/preferred-sync','POST',{name:d.name,template_node_id:d.template_node_id,sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),count:Number(d.count),minutes:Number(d.minutes),ports:d.extra_port?[443,8443]:[443],confirmed:!!d.confirmed});notice('同步组已创建，请到订阅用户分配该组；后续来源数量增加不会自动创建或授权入口。')});
  $('#fields [name=sources]').maxLength=16400;
 };
 actions['preferred-sync-run']=async b=>{const j=await api('catalog/preferred-sync/'+b.dataset.id+'/run','POST',{});await render();notice(syncStates[j.status]||j.status)};

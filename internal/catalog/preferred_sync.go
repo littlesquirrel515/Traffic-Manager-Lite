@@ -58,8 +58,8 @@ type PreferredSync struct {
 
 func validateSync(d *SyncConfig) error {
 	d.Name = strings.TrimSpace(d.Name)
-	if !d.Confirmed || !validName(d.Name) || d.Count < 1 || d.Count > 30 || d.Minutes < 5 || d.Minutes > 1440 || len(d.Sources) < 1 || len(d.Sources) > 8 || len(d.Ports) < 1 || len(d.Ports) > 2 {
-		return fmt.Errorf("请确认同步计划：来源1–8个、入口1–30个、间隔5–1440分钟")
+	if !d.Confirmed || !validName(d.Name) || d.Count < 0 || d.Count > 500 || d.Minutes < 5 || d.Minutes > 1440 || len(d.Sources) < 1 || len(d.Sources) > 8 || len(d.Ports) < 1 || len(d.Ports) > 2 {
+		return fmt.Errorf("请确认同步计划：来源1–8个、入口0–500个（0表示首次有效候选全部创建）、间隔5–1440分钟")
 	}
 	seen := map[string]bool{}
 	for i, raw := range d.Sources {
@@ -100,7 +100,10 @@ func (s *PreferredSync) collect(ctx context.Context, d SyncConfig, old []sourceS
 			text, e := fetch(ctx, u, "feed")
 			if e == nil {
 				var p preferred.Parsed
-				p, e = preferred.Parse(text, 443, 100)
+				p, e = preferred.Parse(text, 443, 500)
+				if e == nil && p.Truncated > 0 {
+					e = fmt.Errorf("来源超过500条有效候选")
+				}
 				if e == nil {
 					entries := filterSyncAddresses(ctx, p.Entries, d.Ports)
 					if len(entries) > 0 {
@@ -250,6 +253,20 @@ func (s *PreferredSync) Create(ctx context.Context, d SyncConfig) (SyncJob, erro
 	states := s.collect(ctx, d, nil)
 	now := time.Now()
 	candidates := syncCandidates(states, now)
+	if len(candidates) == 0 {
+		return empty, fmt.Errorf("首次同步没有有效候选，请检查来源和端口")
+	}
+	if d.Count == 0 {
+		for i, source := range states {
+			if source.Status != "ok" {
+				return empty, fmt.Errorf("来源 %d 未完整读取（可能超出500条），无法创建全部候选", i+1)
+			}
+		}
+		if len(candidates) > 500 {
+			return empty, fmt.Errorf("去重后有效候选 %d 个，超过单组上限500；请拆分来源", len(candidates))
+		}
+		d.Count = len(candidates)
+	}
 	if len(candidates) < d.Count {
 		return empty, fmt.Errorf("首次同步只有 %d 个有效候选，请减少入口数量或检查来源", len(candidates))
 	}

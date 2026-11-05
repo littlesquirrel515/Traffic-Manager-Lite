@@ -144,3 +144,43 @@ func TestPreferredSyncKeepsAuthorizedSlotsAndExistingUnifiedURL(t *testing.T) {
 		t.Fatal("sync touched credentials", count, e)
 	}
 }
+
+func TestPreferredSyncAllSourcesCreatesMoreThanThirtyWithoutGrant(t *testing.T) {
+	s, _ := fixture(t)
+	ctx := context.Background()
+	inbound, err := remote.SaveManual(ctx, s, remote.Inbound{InstanceID: 1, Tag: "many", Profile: core.NodeProfile{Protocol: "vless", Transport: "ws", Path: "/ws", Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl, err := catalog.CreateConnection(ctx, s, catalog.Connection{InboundID: inbound, Name: "template", Enabled: true, Profile: map[string]any{"address": "origin.example.com", "port": 443, "sni": "origin.example.com", "host": "origin.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for i := 1; i <= 45; i++ {
+		lines = append(lines, fmt.Sprintf("104.16.1.%d:443", i))
+	}
+	worker := &catalog.PreferredSync{Store: s}
+	worker.TestSetFetcher(func(_ context.Context, u, _ string) (string, error) {
+		if strings.Contains(u, "bad") {
+			return "", fmt.Errorf("failed")
+		}
+		return strings.Join(lines, "\n"), nil
+	})
+	job, err := worker.Create(ctx, catalog.SyncConfig{Name: "SG", Template: tpl.NodeID, Sources: []string{"https://a.example.com/a", "https://b.example.com/b"}, Count: 0, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(ids) != 45 || job.Config.Count != 45 {
+		t.Fatalf("count=%d job=%d error=%v", len(ids), job.Config.Count, err)
+	}
+	var grants int
+	if err = s.DB.QueryRow("select count(*) from subscriber_node_grants").Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("unexpected grants %d %v", grants, err)
+	}
+	_, err = worker.Create(ctx, catalog.SyncConfig{Name: "bad", Template: tpl.NodeID, Sources: []string{"https://a.example.com/a", "https://bad.example.com/a"}, Count: 0, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err == nil {
+		t.Fatal("failed source must not silently create incomplete group")
+	}
+}
