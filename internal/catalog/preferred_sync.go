@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -30,10 +31,18 @@ type SyncConfig struct {
 	Confirmed bool     `json:"confirmed"`
 }
 type sourceSnapshot struct {
-	LastGood  int64               `json:"last_good"`
-	Entries   []preferred.Address `json:"entries"`
-	Status    string              `json:"status"`
-	Truncated int                 `json:"truncated,omitempty"`
+	LastGood          int64               `json:"last_good"`
+	Entries           []preferred.Address `json:"entries"`
+	Status            string              `json:"status"`
+	Truncated         int                 `json:"truncated,omitempty"`
+	AttemptBytes      int                 `json:"attempt_bytes,omitempty"`
+	AttemptParsed     int                 `json:"attempt_parsed,omitempty"`
+	AttemptValid      int                 `json:"attempt_valid,omitempty"`
+	AttemptInvalid    int                 `json:"attempt_invalid,omitempty"`
+	AttemptDuplicates int                 `json:"attempt_duplicates,omitempty"`
+	AttemptTruncated  int                 `json:"attempt_truncated,omitempty"`
+	AttemptError      string              `json:"attempt_error,omitempty"`
+	AttemptDurationMS int64               `json:"attempt_duration_ms,omitempty"`
 }
 type SyncJob struct {
 	ID             string             `json:"id"`
@@ -56,6 +65,38 @@ type SyncSourceStatus struct {
 	Count     int    `json:"count"`
 	Truncated int    `json:"truncated,omitempty"`
 }
+type SyncRunSource struct {
+	Position      int    `json:"position"`
+	Host          string `json:"host"`
+	SourceID      string `json:"source_id"`
+	Status        string `json:"status"`
+	ResponseBytes int    `json:"response_bytes"`
+	ReturnedCount int    `json:"returned_count"`
+	Parsed        int    `json:"parsed"`
+	Valid         int    `json:"valid"`
+	Invalid       int    `json:"invalid"`
+	Duplicates    int    `json:"duplicates"`
+	Truncated     int    `json:"truncated"`
+	CachedCount   int    `json:"cached_count"`
+	DurationMS    int64  `json:"duration_ms"`
+	ErrorCode     string `json:"error_code"`
+}
+type SyncRun struct {
+	ID             int64           `json:"id"`
+	JobID          string          `json:"job_id"`
+	Trigger        string          `json:"trigger"`
+	StartedAt      string          `json:"started_at"`
+	FinishedAt     string          `json:"finished_at"`
+	DurationMS     int64           `json:"duration_ms"`
+	Status         string          `json:"status"`
+	CandidateCount int             `json:"candidate_count"`
+	ActiveCount    int             `json:"active_count"`
+	SlotCount      int             `json:"slot_count"`
+	LimitValue     int             `json:"limit_value"`
+	Sources        []SyncRunSource `json:"sources"`
+	ErrorCode      string          `json:"error_code"`
+}
+
 type PreferredSync struct {
 	Store *storage.Store
 	mu    sync.Mutex
@@ -100,26 +141,52 @@ func (s *PreferredSync) collect(ctx context.Context, d SyncConfig, old []sourceS
 	var wg sync.WaitGroup
 	for i, u := range d.Sources {
 		wg.Go(func() {
+			started := time.Now()
 			previous := sourceSnapshot{}
 			if i < len(old) {
 				previous = old[i]
 			}
+			// Attempt metrics are separate from cached content and never contain feed data.
+			previous.AttemptBytes = 0
+			previous.AttemptParsed = 0
+			previous.AttemptValid = 0
+			previous.AttemptInvalid = 0
+			previous.AttemptDuplicates = 0
+			previous.AttemptTruncated = 0
+			previous.AttemptError = ""
 			text, e := fetch(ctx, u, "feed")
+			previous.AttemptBytes = len(text)
 			if e == nil {
-				var p preferred.Parsed
-				p, e = preferred.Parse(text, 443, 500)
+				var parsed preferred.Parsed
+				parsed, e = preferred.Parse(text, 443, 500)
 				if e == nil {
-					entries := filterSyncAddresses(ctx, p.Entries, d.Ports)
+					entries := filterSyncAddresses(ctx, parsed.Entries, d.Ports)
+					previous.AttemptParsed = len(parsed.Entries)
+					previous.AttemptValid = len(entries)
+					previous.AttemptInvalid = parsed.Invalid
+					previous.AttemptDuplicates = parsed.Duplicates
+					previous.AttemptTruncated = parsed.Truncated
 					if len(entries) > 0 {
-						out[i] = sourceSnapshot{LastGood: time.Now().Unix(), Entries: entries, Status: "ok", Truncated: p.Truncated}
+						previous.LastGood = time.Now().Unix()
+						previous.Entries = entries
+						previous.Status = "ok"
+						previous.Truncated = parsed.Truncated
+						previous.AttemptDurationMS = time.Since(started).Milliseconds()
+						out[i] = previous
 						return
 					}
+					previous.AttemptError = "no_valid_candidates"
+				} else {
+					previous.AttemptError = "invalid_format"
 				}
+			} else {
+				previous.AttemptError = "fetch_failed"
 			}
 			previous.Status = "error"
 			if previous.LastGood > 0 {
 				previous.Status = "cached"
 			}
+			previous.AttemptDurationMS = time.Since(started).Milliseconds()
 			out[i] = previous
 		})
 	}
@@ -263,6 +330,7 @@ func (s *PreferredSync) List(ctx context.Context) ([]SyncJob, error) {
 	return out, nil
 }
 func (s *PreferredSync) Create(ctx context.Context, d SyncConfig) (SyncJob, error) {
+	started := time.Now()
 	var empty SyncJob
 	if e := validateSync(&d); e != nil {
 		return empty, e
@@ -348,6 +416,9 @@ func (s *PreferredSync) Create(ctx context.Context, d SyncConfig) (SyncJob, erro
 	if e != nil {
 		return empty, e
 	}
+	if e = insertSyncRun(ctx, tx, j, states, started, "initial", j.Status, ""); e != nil {
+		return empty, e
+	}
 	return j, tx.Commit()
 }
 func syncStatus(states []sourceSnapshot) string {
@@ -371,6 +442,7 @@ func (s *PreferredSync) Enable(ctx context.Context, id string, enabled bool) err
 }
 
 type syncSlot struct {
+	position                                   int
 	node, endpoint, binding, revision, profile string
 	current                                    preferred.Address
 	active                                     bool
@@ -412,6 +484,10 @@ func chooseSlots(slots []syncSlot, candidates []preferred.Address) []preferred.A
 	return out
 }
 func (s *PreferredSync) Sync(ctx context.Context, id string) (SyncJob, error) {
+	return s.sync(ctx, id, "manual")
+}
+func (s *PreferredSync) sync(ctx context.Context, id, trigger string) (SyncJob, error) {
+	started := time.Now()
 	if !s.mu.TryLock() {
 		return SyncJob{}, fmt.Errorf("已有同步正在执行，请稍后重试")
 	}
@@ -437,16 +513,17 @@ func (s *PreferredSync) Sync(ctx context.Context, id string) (SyncJob, error) {
 	}
 	states := s.collect(ctx, j.Config, j.snapshots)
 	if ctx.Err() != nil {
+		s.recordSyncFailure(ctx, j, states, started, trigger, "cancelled")
 		return j, ctx.Err()
 	}
-	if e = s.apply(ctx, j, states); e != nil {
+	if e = s.apply(ctx, j, states, started, trigger); e != nil {
 		// Keep the previously committed slots intact on any write or validation failure.
-		_, _ = s.Store.DB.ExecContext(ctx, "UPDATE preferred_sync_jobs SET state_json=?,status='blocked' WHERE id=? AND revision=? AND enabled=1", encode(states), id, j.Revision)
+		s.recordSyncFailure(ctx, j, states, started, trigger, syncFailureCode(e))
 		return j, e
 	}
 	return syncScan(s.Store.DB.QueryRowContext(ctx, "SELECT "+syncColumns+" FROM preferred_sync_jobs WHERE id=?", id))
 }
-func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSnapshot) error {
+func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSnapshot, started time.Time, trigger string) error {
 	tx, e := s.Store.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
@@ -468,18 +545,35 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 	status := syncStatus(states)
 	success := j.LastSuccess
 	fresh := false
+	allFresh := len(states) > 0
 	for _, st := range states {
 		fresh = fresh || st.Status == "ok"
+		allFresh = allFresh && st.Status == "ok"
+	}
+	// A partial failure never changes published nodes, even when cached or
+	// remaining sources could fill every slot.
+	if !allFresh {
+		status = "stale"
+		if fresh {
+			status = "degraded"
+		}
+		if _, e = tx.ExecContext(ctx, "UPDATE preferred_sync_jobs SET state_json=?,status=? WHERE id=?", encode(states), status, j.ID); e != nil {
+			return e
+		}
+		if e = insertSyncRun(ctx, tx, j, states, started, trigger, status, ""); e != nil {
+			return e
+		}
+		return tx.Commit()
 	}
 	if fresh && len(candidates) > 0 {
-		rows, e := tx.QueryContext(ctx, `SELECT node_id,endpoint_id,binding_id,expected_revision,expected_profile,active FROM preferred_sync_slots WHERE job_id=? ORDER BY position`, j.ID)
+		rows, e := tx.QueryContext(ctx, `SELECT position,node_id,endpoint_id,binding_id,expected_revision,expected_profile,active FROM preferred_sync_slots WHERE job_id=? ORDER BY position`, j.ID)
 		if e != nil {
 			return e
 		}
 		slots := []syncSlot{}
 		for rows.Next() {
 			var slot syncSlot
-			if e = rows.Scan(&slot.node, &slot.endpoint, &slot.binding, &slot.revision, &slot.profile, &slot.active); e != nil {
+			if e = rows.Scan(&slot.position, &slot.node, &slot.endpoint, &slot.binding, &slot.revision, &slot.profile, &slot.active); e != nil {
 				rows.Close()
 				return e
 			}
@@ -496,7 +590,7 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 		for i := range slots {
 			v := &slots[i]
 			n, e := ResolveDefinition(ctx, tx, v.node)
-			if e != nil || !PreferredTemplate(n) || *n.EndpointID != v.endpoint || *n.BindingID != v.binding || slotRevision(n) != v.revision {
+			if e != nil || !PreferredTemplate(n) || n.EndpointID == nil || n.BindingID == nil || *n.EndpointID != v.endpoint || *n.BindingID != v.binding || slotRevision(n) != v.revision {
 				return fmt.Errorf("同步入口已被修改、停用或需要复核；保留原发布")
 			}
 			var raw string
@@ -506,6 +600,13 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 			}
 			if raw != v.profile || refs != 1 || variants != 1 {
 				return fmt.Errorf("同步入口已修改或共享；保留原发布")
+			}
+			var memberCount int
+			if e = tx.QueryRowContext(ctx, "SELECT count(*) FROM node_group_members WHERE group_id=? AND node_id=?", j.GroupID, v.node).Scan(&memberCount); e != nil {
+				return e
+			}
+			if (memberCount == 1) != v.active {
+				return fmt.Errorf("同步组成员已被人工更改；保留原发布")
 			}
 			v.current = preferred.Address{Address: n.Profile.Address, Port: n.Profile.Port}
 		}
@@ -547,7 +648,7 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 					if err = tx.QueryRowContext(ctx, "SELECT profile_json FROM node_endpoints WHERE id=?", created.EndpointID).Scan(&profile); err != nil {
 						return err
 					}
-					v := syncSlot{node: created.NodeID, endpoint: created.EndpointID, binding: created.BindingID, revision: slotRevision(n), profile: profile, current: a, active: true}
+					v := syncSlot{position: pos, node: created.NodeID, endpoint: created.EndpointID, binding: created.BindingID, revision: slotRevision(n), profile: profile, current: a, active: true}
 					if _, err = tx.ExecContext(ctx, "INSERT INTO preferred_sync_slots VALUES(?,?,?,?,?,?,?,1)", j.ID, pos, v.node, v.endpoint, v.binding, v.revision, v.profile); err != nil {
 						return err
 					}
@@ -565,14 +666,6 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 					return err
 				}
 			}
-		}
-		// A source error must not make a formerly published endpoint disappear.
-		allFresh := true
-		for _, source := range states {
-			allFresh = allFresh && source.Status == "ok"
-		}
-		if !allFresh && len(candidates) < len(slots) {
-			return fmt.Errorf("来源不完整，保留上次发布")
 		}
 		next := chooseSlots(slots, candidates)
 		for i, v := range slots {
@@ -595,18 +688,31 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 				}
 				v.revision = slotRevision(n)
 			}
+			// Managed group membership follows publication; the stable slot/node and
+			// any explicit rights or other groups remain untouched.
+			if active != v.active {
+				if active {
+					if _, e = tx.ExecContext(ctx, "INSERT INTO node_group_members(group_id,node_id,sort_order) VALUES(?,?,?)", j.GroupID, v.node, v.position); e != nil {
+						return e
+					}
+				} else {
+					if _, e = tx.ExecContext(ctx, "DELETE FROM node_group_members WHERE group_id=? AND node_id=?", j.GroupID, v.node); e != nil {
+						return e
+					}
+				}
+			}
 			if _, e = tx.ExecContext(ctx, "UPDATE preferred_sync_slots SET expected_revision=?,expected_profile=?,active=? WHERE node_id=?", v.revision, v.profile, active, v.node); e != nil {
 				return e
 			}
 		}
 		success = storage.Stamp(now)
-		if len(candidates) < len(slots) {
-			status = "degraded"
-		}
 	} else {
 		status = "stale"
 	}
 	if _, e = tx.ExecContext(ctx, "UPDATE preferred_sync_jobs SET state_json=?,last_success=?,status=? WHERE id=?", encode(states), success, status, j.ID); e != nil {
+		return e
+	}
+	if e = insertSyncRun(ctx, tx, j, states, started, trigger, status, ""); e != nil {
 		return e
 	}
 	return tx.Commit()
@@ -633,7 +739,7 @@ func (s *PreferredSync) Run(ctx context.Context) {
 		}
 		var id string
 		if e := s.Store.DB.QueryRowContext(ctx, "SELECT id FROM preferred_sync_jobs WHERE enabled=1 AND next_run<=? ORDER BY next_run,id LIMIT 1", time.Now().Unix()).Scan(&id); e == nil {
-			_, _ = s.Sync(ctx, id)
+			_, _ = s.sync(ctx, id, "scheduled")
 		}
 	}
 }
@@ -698,4 +804,100 @@ func (s *PreferredSync) EditSources(ctx context.Context, id string, d SyncSource
 		return e
 	}
 	return tx.Commit()
+}
+
+// Sync history is bounded per job and contains no source paths, payloads, IPs or credentials.
+func insertSyncRun(ctx context.Context, tx *sql.Tx, j SyncJob, states []sourceSnapshot, started time.Time, trigger, status, errorCode string) error {
+	var active, slots int
+	if e := tx.QueryRowContext(ctx, "SELECT count(*),coalesce(sum(CASE WHEN active=1 THEN 1 ELSE 0 END),0) FROM preferred_sync_slots WHERE job_id=?", j.ID).Scan(&slots, &active); e != nil {
+		return e
+	}
+	metrics := make([]SyncRunSource, 0, len(states))
+	for i, v := range states {
+		var host, id string
+		if i < len(j.Config.Sources) {
+			u, _ := url.Parse(j.Config.Sources[i])
+			if u != nil {
+				host = u.Hostname()
+			}
+			sum := sha256.Sum256([]byte(j.Config.Sources[i]))
+			id = fmt.Sprintf("%x", sum[:6])
+		}
+		metrics = append(metrics, SyncRunSource{Position: i + 1, Host: host, SourceID: id, Status: v.Status, ResponseBytes: v.AttemptBytes, ReturnedCount: v.AttemptParsed + v.AttemptInvalid + v.AttemptDuplicates + v.AttemptTruncated, Parsed: v.AttemptParsed, Valid: v.AttemptValid, Invalid: v.AttemptInvalid, Duplicates: v.AttemptDuplicates, Truncated: v.AttemptTruncated, CachedCount: len(v.Entries), DurationMS: v.AttemptDurationMS, ErrorCode: v.AttemptError})
+	}
+	finished := time.Now()
+	duration := finished.Sub(started).Milliseconds()
+	if duration < 0 {
+		duration = 0
+	}
+	_, e := tx.ExecContext(ctx, `INSERT INTO preferred_sync_runs(job_id,trigger,started_at,finished_at,duration_ms,status,candidate_count,active_count,slot_count,limit_value,sources_json,error_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, j.ID, trigger, storage.Stamp(started), storage.Stamp(finished), duration, status, len(syncCandidates(states, finished)), active, slots, syncLimit(j.Config), encode(metrics), errorCode)
+	if e != nil {
+		return e
+	}
+	_, e = tx.ExecContext(ctx, `DELETE FROM preferred_sync_runs WHERE job_id=? AND id NOT IN (SELECT id FROM preferred_sync_runs WHERE job_id=? ORDER BY id DESC LIMIT 200)`, j.ID, j.ID)
+	return e
+}
+func (s *PreferredSync) recordSyncFailure(ctx context.Context, j SyncJob, states []sourceSnapshot, started time.Time, trigger, code string) {
+	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	tx, e := s.Store.DB.BeginTx(work, nil)
+	if e != nil {
+		return
+	}
+	defer tx.Rollback()
+	if code != "cancelled" {
+		if _, e = tx.ExecContext(work, "UPDATE preferred_sync_jobs SET state_json=?,status='blocked' WHERE id=? AND revision=? AND enabled=1", encode(states), j.ID, j.Revision); e != nil {
+			return
+		}
+	}
+	if e = insertSyncRun(work, tx, j, states, started, trigger, "blocked", code); e != nil {
+		return
+	}
+	_ = tx.Commit()
+}
+func (s *PreferredSync) History(ctx context.Context, id string) ([]SyncRun, error) {
+	var exists int
+	if e := s.Store.DB.QueryRowContext(ctx, "SELECT count(*) FROM preferred_sync_jobs WHERE id=?", id).Scan(&exists); e != nil {
+		return nil, e
+	}
+	if exists == 0 {
+		return nil, sql.ErrNoRows
+	}
+	rows, e := s.Store.DB.QueryContext(ctx, `SELECT id,job_id,trigger,started_at,finished_at,duration_ms,status,candidate_count,active_count,slot_count,limit_value,sources_json,error_code FROM preferred_sync_runs WHERE job_id=? ORDER BY id DESC LIMIT 200`, id)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []SyncRun{}
+	for rows.Next() {
+		var r SyncRun
+		var raw string
+		if e = rows.Scan(&r.ID, &r.JobID, &r.Trigger, &r.StartedAt, &r.FinishedAt, &r.DurationMS, &r.Status, &r.CandidateCount, &r.ActiveCount, &r.SlotCount, &r.LimitValue, &raw, &r.ErrorCode); e != nil {
+			return nil, e
+		}
+		if e = json.Unmarshal([]byte(raw), &r.Sources); e != nil {
+			return nil, e
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func syncFailureCode(e error) string {
+	if e == nil {
+		return ""
+	}
+	s := e.Error()
+	switch {
+	case strings.Contains(s, "同步组成员已被人工更改"):
+		return "group_changed"
+	case strings.Contains(s, "同步入口已被修改"), strings.Contains(s, "同步入口已修改或共享"):
+		return "slot_changed"
+	case strings.Contains(s, "来源不完整"):
+		return "sources_incomplete"
+	case strings.Contains(s, "同步入口数量已变化"):
+		return "slot_count_changed"
+	default:
+		return "apply_failed"
+	}
 }

@@ -38,7 +38,7 @@ views.nodegroups=async()=>{
  esc(j.enabled?(syncStates[j.status]||j.status):'已暂停')+`<small>${j.config.minutes} 分钟</small>`,
  j.config.sources.map((u,i)=>`<div>${esc(new URL(u).hostname+new URL(u).pathname)}<small>${esc(syncStates[j.sources[i]?.status]||'未知')} · ${date(j.sources[i]?.last_good)}</small></div>`).join(''),
  date(j.last_success)+`<small>最近尝试 ${date(j.last_attempt)}</small>`,
- `<button data-action="preferred-sync-edit" data-id="${esc(j.id)}">编辑来源 / 容量</button>`+(j.enabled?`<button data-action="preferred-sync-run" data-id="${esc(j.id)}">立即同步</button>`:'')+`<button data-action="preferred-sync-toggle" data-id="${esc(j.id)}" data-enabled="${j.enabled?'false':'true'}">${j.enabled?'暂停':'恢复'}</button>`
+ `<button data-action="preferred-sync-history" data-id="${esc(j.id)}">同步记录</button><button data-action="preferred-sync-edit" data-id="${esc(j.id)}">编辑来源 / 容量</button>`+(j.enabled?`<button data-action="preferred-sync-run" data-id="${esc(j.id)}">立即同步</button>`:'')+`<button data-action="preferred-sync-toggle" data-id="${esc(j.id)}" data-enabled="${j.enabled?'false':'true'}">${j.enabled?'暂停':'恢复'}</button>`
  ]))}</section>`;
 };
 actions['preferred-sync-create']=async()=>{
@@ -68,4 +68,14 @@ actions['preferred-sync-edit']=async b=>{
  field('confirmed','确认信任这些来源并允许更新已授权入口',false,'checkbox'),
  d=>api('catalog/preferred-sync/'+j.id+'/sources','PUT',{sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),minutes:Number(d.minutes),limit:Number(d.limit),revision:j.revision,confirmed:d.confirmed}));
  $('#fields [name=sources]').maxLength=16400;
+};
+
+actions['preferred-sync-history']=async b=>{
+ const id=b.dataset.id;const [jobs,runs]=await Promise.all([api('catalog/preferred-sync'),api('catalog/preferred-sync/'+id+'/history')]);const job=jobs.find(j=>j.id===id);
+ const trigger={initial:'首次创建',manual:'手动同步',scheduled:'定时同步'},errors={fetch_failed:'拉取失败',invalid_format:'格式无效',no_valid_candidates:'无有效候选',apply_failed:'校验或写入失败，保留上次发布',group_changed:'分组成员被人工修改，保留上次发布',slot_changed:'入口被人工修改，保留上次发布',sources_incomplete:'来源不完整，保留上次发布',slot_count_changed:'入口数量异常，保留上次发布',cancelled:'请求中断，保留上次发布'};
+ const summaries=runs.map(run=>{
+  const detail=run.sources.map(v=>`<li>来源 ${v.position} · ${esc(v.host||'未知主机')} · 标识 ${esc(v.source_id)}：${esc(syncStates[v.status]||v.status)}；响应 ${v.response_bytes} 字节，返回条目 ${v.returned_count} 条，解析去重 ${v.parsed} 条，有效 ${v.valid} 条，无效 ${v.invalid} 条，重复 ${v.duplicates} 条，截断 ${v.truncated} 条；缓存 ${v.cached_count} 条，耗时 ${v.duration_ms} ms${v.error_code?'；'+esc(errors[v.error_code]||v.error_code):''}</li>`).join('');
+  return `<details class="sync-history-item"><summary>${esc(date(run.started_at))} · ${esc(syncStates[run.status]||run.status)} · ${esc(trigger[run.trigger]||run.trigger)} · 发布 ${run.active_count} 个</summary><p>结束 ${esc(date(run.finished_at))}；耗时 ${run.duration_ms} ms；合并去重候选（含缓存） ${run.candidate_count} 个；已建 ${run.slot_count} 个；上限 ${run.limit_value} 个。${run.error_code?esc(errors[run.error_code]||run.error_code):''}</p><ul>${detail}</ul></details>`;
+ }).join('');
+ edit((job?.config.name||'同步组')+' · 同步记录',`<div class="wide"><p class="muted">最近最多 200 条。来源序号按当次配置记录，标识用于区分同一主机上的来源；不保存地址列表或来源路径。失败时保留上次发布。</p>${summaries||'<p>暂无同步记录；升级前的历史无法补录。</p>'}</div>`,async()=>{});$('#edit-form [type=submit]').textContent='关闭';
 };

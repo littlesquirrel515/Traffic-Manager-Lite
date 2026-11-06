@@ -2,15 +2,18 @@ package catalog_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"traffic-manager-lite/internal/catalog"
 	"traffic-manager-lite/internal/core"
 	"traffic-manager-lite/internal/remote"
 	"traffic-manager-lite/internal/subscription"
+	"traffic-manager-lite/migrations"
 )
 
 func TestPreferredSyncKeepsAuthorizedSlotsAndExistingUnifiedURL(t *testing.T) {
@@ -175,6 +178,10 @@ func TestPreferredSyncAllSourcesCreatesMoreThanThirtyWithoutGrant(t *testing.T) 
 	if err != nil || len(ids) != 45 || job.Config.Count != 45 {
 		t.Fatalf("count=%d job=%d error=%v", len(ids), job.Config.Count, err)
 	}
+	otherGroup, err := catalog.SaveGroup(ctx, s, catalog.Group{Name: "independent", Enabled: true, NodeIDs: []string{ids[30]}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 46; i <= 60; i++ {
 		lines = append(lines, fmt.Sprintf("104.16.1.%d:443", i))
 	}
@@ -217,6 +224,14 @@ func TestPreferredSyncAllSourcesCreatesMoreThanThirtyWithoutGrant(t *testing.T) 
 	if err = s.DB.QueryRow("select count(*) from preferred_sync_slots where job_id=? and active=1", job.ID).Scan(&active); err != nil || active != 20 {
 		t.Fatalf("lower limit: %d %v", active, err)
 	}
+	activeMembers, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(activeMembers) != 20 {
+		t.Fatalf("managed group must shrink: %d %v", len(activeMembers), err)
+	}
+	otherMembers, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{otherGroup})
+	if err != nil || len(otherMembers) != 1 || otherMembers[0] != ids[30] {
+		t.Fatalf("independent group changed: %v %v", otherMembers, err)
+	}
 	jobs, err = worker.List(ctx)
 	if err != nil || !jobs[0].LimitReached || jobs[0].CandidateCount != 60 || jobs[0].ActiveCount != 20 {
 		t.Fatalf("limit status: %v %v", jobs, err)
@@ -232,12 +247,25 @@ func TestPreferredSyncAllSourcesCreatesMoreThanThirtyWithoutGrant(t *testing.T) 
 	if _, err = worker.Sync(ctx, job.ID); err != nil {
 		t.Fatal(err)
 	}
+	restored, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(restored) != 60 {
+		t.Fatalf("managed group must restore: %d %v", len(restored), err)
+	}
+	for i := range newIDs {
+		if restored[i] != newIDs[i] {
+			t.Fatal("restoration changed stable identity")
+		}
+	}
 	lines = lines[:10]
-	if _, err = worker.Sync(ctx, job.ID); err != nil {
-		t.Fatal(err)
+	if current, syncErr := worker.Sync(ctx, job.ID); syncErr != nil || current.Status != "ok" {
+		t.Fatalf("successful smaller source must be healthy: %s %v", current.Status, syncErr)
 	}
 	if err = s.DB.QueryRow("select count(*) from preferred_sync_slots where job_id=? and active=1", job.ID).Scan(&active); err != nil || active != 10 {
 		t.Fatalf("candidate decrease: %d %v", active, err)
+	}
+	members, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(members) != 10 {
+		t.Fatalf("candidate decrease must update group: %d %v", len(members), err)
 	}
 	var grants int
 	if err = s.DB.QueryRow("select count(*) from subscriber_node_grants").Scan(&grants); err != nil || grants != 0 {
@@ -280,4 +308,256 @@ func TestPreferredSyncLongSourceUsesLimitWithoutRejecting(t *testing.T) {
 	if err != nil || len(jobs) != 1 || !jobs[0].LimitReached || jobs[0].Sources[0].Truncated != 10 || jobs[0].ActiveCount != 4 {
 		t.Fatalf("missing truncation disclosure: %#v %v", jobs, err)
 	}
+}
+
+func TestSyncActiveMembershipMigrationAndManualChange(t *testing.T) {
+	s, _ := fixture(t)
+	ctx := context.Background()
+	in, err := remote.SaveManual(ctx, s, remote.Inbound{InstanceID: 1, Tag: "membership", Profile: core.NodeProfile{Protocol: "vless", Transport: "ws", Path: "/ws", Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl, err := catalog.CreateConnection(ctx, s, catalog.Connection{InboundID: in, Name: "template", Enabled: true, Profile: map[string]any{"address": "origin.example.com", "port": 443, "sni": "origin.example.com", "host": "origin.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &catalog.PreferredSync{Store: s}
+	worker.TestSetFetcher(func(context.Context, string, string) (string, error) {
+		return "104.16.1.1\n104.16.1.2\n104.16.1.3", nil
+	})
+	job, err := worker.Create(ctx, catalog.SyncConfig{Name: "migration", Template: tpl.NodeID, Sources: []string{"https://a.example.com/list"}, Count: 0, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(ids) != 3 {
+		t.Fatal(ids, err)
+	}
+	other, err := catalog.SaveGroup(ctx, s, catalog.Group{Name: "other", Enabled: true, NodeIDs: []string{ids[2]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := subscription.SaveSubscriber(ctx, s, subscription.Subscriber{Name: "migration-user", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("INSERT INTO subscriber_group_grants VALUES(?,?,?)", user, job.GroupID, "now"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("UPDATE preferred_sync_slots SET active=0 WHERE node_id=?", ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	script, err := migrations.Files.ReadFile("011_sync_active_members.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec(string(script)); err != nil {
+		t.Fatal(err)
+	}
+	members, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(members) != 2 {
+		t.Fatal(members, err)
+	}
+	assigned, err := subscription.NodeAssignments(ctx, s.DB, user)
+	if err != nil || len(assigned) != 2 {
+		t.Fatalf("subscriber must follow active group: %v %v", assigned, err)
+	}
+	otherMembers, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{other})
+	if err != nil || len(otherMembers) != 1 || otherMembers[0] != ids[2] {
+		t.Fatal(otherMembers, err)
+	}
+	var slots, grants int
+	if err = s.DB.QueryRow("SELECT count(*) FROM preferred_sync_slots WHERE job_id=?", job.ID).Scan(&slots); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.QueryRow("SELECT count(*) FROM subscriber_group_grants WHERE subscriber_id=?", user).Scan(&grants); err != nil {
+		t.Fatal(err)
+	}
+	if slots != 3 || grants != 1 {
+		t.Fatal(slots, grants)
+	}
+	if _, err = worker.Sync(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	members, err = subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(members) != 3 || members[2] != ids[2] {
+		t.Fatal("reactivation identity", members, err)
+	}
+	assigned, err = subscription.NodeAssignments(ctx, s.DB, user)
+	if err != nil || len(assigned) != 3 {
+		t.Fatalf("subscriber did not recover group member: %v %v", assigned, err)
+	}
+	if _, err = s.DB.Exec("DELETE FROM node_group_members WHERE group_id=? AND node_id=?", job.GroupID, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = worker.Sync(ctx, job.ID); err == nil {
+		t.Fatal("manual group edit must block sync")
+	}
+	members, err = subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
+	if err != nil || len(members) != 2 {
+		t.Fatal("manual edit overwritten", members, err)
+	}
+}
+
+func TestPreferredSyncHistoryPreservesPublishedOnSourceFailure(t *testing.T) {
+	s, _ := fixture(t)
+	ctx := context.Background()
+	in, err := remote.SaveManual(ctx, s, remote.Inbound{InstanceID: 1, Tag: "history", Profile: core.NodeProfile{Protocol: "vless", Transport: "ws", Path: "/ws", Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl, err := catalog.CreateConnection(ctx, s, catalog.Connection{InboundID: in, Name: "history-template", Enabled: true, Profile: map[string]any{"address": "origin.example.com", "port": 443, "sni": "origin.example.com", "host": "origin.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := "https://a.example.com/private/path", "https://b.example.com/secret/path"
+	feeds := map[string]string{a: "104.16.1.1\n104.16.1.2", b: "104.16.1.3\n104.16.1.4"}
+	w := &catalog.PreferredSync{Store: s}
+	w.TestSetFetcher(func(_ context.Context, u, _ string) (string, error) {
+		v, ok := feeds[u]
+		if !ok {
+			return "", fmt.Errorf("sensitive raw error")
+		}
+		return v, nil
+	})
+	j, err := w.Create(ctx, catalog.SyncConfig{Name: "history", Template: tpl.NodeID, Sources: []string{a, b}, Count: 0, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := w.History(ctx, j.ID)
+	if err != nil || len(initial) != 1 || initial[0].Trigger != "initial" || initial[0].ActiveCount != 4 || len(initial[0].Sources) != 2 || initial[0].Sources[0].Valid != 2 {
+		t.Fatalf("initial history %#v %v", initial, err)
+	}
+	ids, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{j.GroupID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := []string{}
+	for _, id := range ids {
+		n, e := catalog.ResolveDefinition(ctx, s.DB, id)
+		if e != nil {
+			t.Fatal(e)
+		}
+		before = append(before, n.Profile.Address)
+	}
+	delete(feeds, a)
+	feeds[b] = "104.16.10.1\n104.16.10.2\n104.16.10.3\n104.16.10.4\n104.16.10.5"
+	got, err := w.Sync(ctx, j.ID)
+	if err != nil || got.Status != "degraded" {
+		t.Fatal(got, err)
+	}
+	afterIDs, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{j.GroupID})
+	if err != nil || fmt.Sprint(ids) != fmt.Sprint(afterIDs) {
+		t.Fatal("members changed on partial failure", afterIDs, err)
+	}
+	for i, id := range ids {
+		n, e := catalog.ResolveDefinition(ctx, s.DB, id)
+		if e != nil || n.Profile.Address != before[i] {
+			t.Fatal("address changed on partial failure", i, e)
+		}
+	}
+	history, err := w.History(ctx, j.ID)
+	if err != nil || len(history) != 2 || history[0].Trigger != "manual" || history[0].Status != "degraded" || history[0].ActiveCount != 4 {
+		t.Fatalf("history result %#v %v", history, err)
+	}
+	v := history[0].Sources
+	if len(v) != 2 || v[0].Status != "cached" || v[0].ErrorCode != "fetch_failed" || v[0].Valid != 0 || v[0].CachedCount != 2 || v[1].Valid != 5 {
+		t.Fatalf("per-source metrics %#v", v)
+	}
+	raw, _ := json.Marshal(history)
+	if strings.Contains(string(raw), "private/path") || strings.Contains(string(raw), "secret/path") || strings.Contains(string(raw), "104.16.") || strings.Contains(string(raw), "sensitive raw error") {
+		t.Fatal("history leaked data or secret")
+	}
+	delete(feeds, b)
+	if got, err = w.Sync(ctx, j.ID); err != nil || got.Status != "stale" {
+		t.Fatal(got, err)
+	}
+	history, err = w.History(ctx, j.ID)
+	if err != nil || history[0].Status != "stale" || history[0].ActiveCount != 4 {
+		t.Fatal(history, err)
+	}
+	// An explicit manual membership change is blocked and logged without leaking the underlying error.
+	feeds[a] = "104.16.1.1\n104.16.1.2"
+	feeds[b] = "104.16.1.3\n104.16.1.4"
+	if _, err = s.DB.Exec("DELETE FROM node_group_members WHERE group_id=? AND node_id=?", j.GroupID, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Sync(ctx, j.ID); err == nil {
+		t.Fatal("manual change should block sync")
+	}
+	history, err = w.History(ctx, j.ID)
+	if err != nil || history[0].Status != "blocked" || history[0].ErrorCode != "group_changed" || history[0].ActiveCount != 4 {
+		t.Fatal(history, err)
+	}
+	if _, err = s.DB.Exec("INSERT INTO node_group_members VALUES(?,?,?)", j.GroupID, ids[0], 0); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 205; i++ {
+		_, err = tx.Exec(`INSERT INTO preferred_sync_runs(job_id,trigger,started_at,finished_at,duration_ms,status,candidate_count,active_count,slot_count,limit_value,sources_json,error_code) VALUES(?,'manual','now','now',0,'ok',0,0,0,500,'[]','')`, j.ID)
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Sync(ctx, j.ID); err != nil {
+		t.Fatal(err)
+	}
+	history, err = w.History(ctx, j.ID)
+	if err != nil || len(history) != 200 {
+		t.Fatalf("history retention %d %v", len(history), err)
+	}
+	// The group grant and node history remain intact; individual source failures never reset counters.
+	var n int
+	if err = s.DB.QueryRow("select count(*) from preferred_sync_slots where job_id=? and active=1", j.ID).Scan(&n); err != nil || n != 4 {
+		t.Fatal(n, err)
+	}
+}
+
+func TestPreferredSyncScheduledRunRecordsTrigger(t *testing.T) {
+	s, _ := fixture(t)
+	ctx := context.Background()
+	in, err := remote.SaveManual(ctx, s, remote.Inbound{InstanceID: 1, Tag: "scheduler", Profile: core.NodeProfile{Protocol: "vless", Transport: "ws", Path: "/ws", Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl, err := catalog.CreateConnection(ctx, s, catalog.Connection{InboundID: in, Name: "scheduler-template", Enabled: true, Profile: map[string]any{"address": "origin.example.com", "port": 443, "sni": "origin.example.com", "host": "origin.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &catalog.PreferredSync{Store: s}
+	w.TestSetFetcher(func(context.Context, string, string) (string, error) { return "104.16.1.1", nil })
+	j, err := w.Create(ctx, catalog.SyncConfig{Name: "scheduler", Template: tpl.NodeID, Sources: []string{"https://a.example.com/list"}, Count: 0, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("UPDATE preferred_sync_jobs SET next_run=0 WHERE id=?", j.ID); err != nil {
+		t.Fatal(err)
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); w.Run(workerCtx) }()
+	deadline := time.Now().Add(19 * time.Second)
+	for time.Now().Before(deadline) {
+		h, e := w.History(ctx, j.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(h) >= 2 && h[0].Trigger == "scheduled" {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatal("scheduled synchronization not recorded")
 }

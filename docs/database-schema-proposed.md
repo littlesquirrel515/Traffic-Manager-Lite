@@ -1,12 +1,12 @@
 # Traffic Manager Lite 数据库结构与用途
 
-生成日期：2026-11-06。以仓库 migrations/001–009 及本次开发中的 010 在空 SQLite 数据库重建；不读取业务数据。
+生成日期：2026-11-07。以仓库 migrations/001–012 在空 SQLite 数据库重建；不读取业务数据。
 
-本文件反映源码预期结构，实际服务器以其 schema_migrations 和 SQLite PRAGMA 为准。迁移 010 已部署至 35.198.225.153；其他服务器版本可能不同。 字段类型是 SQLite 声明类型；NOT NULL、默认值和复合主键以表格和建表 SQL 为准。
+本文件反映源码预期结构，实际服务器以其 schema_migrations 和 SQLite PRAGMA 为准。迁移 012 属于本次改造；其他服务器版本可能不同。 字段类型是 SQLite 声明类型；NOT NULL、默认值和复合主键以表格和建表 SQL 为准。
 
 本文件仅列模式，不包含密码、令牌、UUID、真实地址、数据行或密钥。
 
-当前共 80 张表（含 schema_migrations）。
+当前共 81 张表（含 schema_migrations）。
 
 ## 表索引
 
@@ -57,6 +57,7 @@
 | `preferred_generated_nodes` | 优选批次生成地址到节点的去重映射 |
 | `preferred_generation_requests` | 优选节点批次预览及生成幂等记录 |
 | `preferred_sync_jobs` | 定时优选多源任务、配置及缓存状态 |
+| `preferred_sync_runs` | 优选同步历史：触发方式、时间、来源脱敏统计、发布数量和状态 |
 | `preferred_sync_slots` | 同步任务的稳定入口槽位和发布状态 |
 | `provider_observations` | 流量来源观测及游标信息 |
 | `remote_inbound_registry` | 远程入站登记与来源能力信息 |
@@ -1328,6 +1329,52 @@ CREATE TABLE preferred_sync_jobs(
  last_attempt TEXT NOT NULL,
  last_success TEXT NOT NULL,
  status TEXT NOT NULL
+);
+```
+
+</details>
+
+## preferred_sync_runs
+
+优选同步历史：触发方式、时间、来源脱敏统计、发布数量和状态
+
+| 字段 | 类型 | NOT NULL | 默认值 | 主键位置 |
+|---|---|---:|---|---:|
+| `id` | `INTEGER` | 否 | — | 1 |
+| `job_id` | `TEXT` | 是 | — | — |
+| `trigger` | `TEXT` | 是 | — | — |
+| `started_at` | `TEXT` | 是 | — | — |
+| `finished_at` | `TEXT` | 是 | — | — |
+| `duration_ms` | `INTEGER` | 是 | — | — |
+| `status` | `TEXT` | 是 | — | — |
+| `candidate_count` | `INTEGER` | 是 | — | — |
+| `active_count` | `INTEGER` | 是 | — | — |
+| `slot_count` | `INTEGER` | 是 | — | — |
+| `limit_value` | `INTEGER` | 是 | — | — |
+| `sources_json` | `TEXT` | 是 | — | — |
+| `error_code` | `TEXT` | 是 | '' | — |
+
+外键：`job_id` → `preferred_sync_jobs.id`（删除 CASCADE）
+
+索引：`preferred_sync_runs_job_time`（非唯一，`job_id`, `id`）
+
+<details><summary>SQLite 建表语句</summary>
+
+```sql
+CREATE TABLE preferred_sync_runs (
+ id INTEGER PRIMARY KEY,
+ job_id TEXT NOT NULL REFERENCES preferred_sync_jobs(id) ON DELETE CASCADE,
+ trigger TEXT NOT NULL CHECK(trigger IN ('initial','manual','scheduled')),
+ started_at TEXT NOT NULL,
+ finished_at TEXT NOT NULL,
+ duration_ms INTEGER NOT NULL CHECK(duration_ms>=0),
+ status TEXT NOT NULL,
+ candidate_count INTEGER NOT NULL,
+ active_count INTEGER NOT NULL,
+ slot_count INTEGER NOT NULL,
+ limit_value INTEGER NOT NULL,
+ sources_json TEXT NOT NULL,
+ error_code TEXT NOT NULL DEFAULT ''
 );
 ```
 

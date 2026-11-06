@@ -10,6 +10,9 @@ func TestPreferredRoutesRequireAdministratorAndRejectPrivateSource(t *testing.T)
 			t.Fatal(path, r.Code)
 		}
 	}
+	if r := call(t, h, "GET", "/api/v1/catalog/preferred-sync/example/history", nil, false); r.Code != 401 {
+		t.Fatalf("sync history unauthenticated: %d", r.Code)
+	}
 	r := call(t, h, "POST", "/api/v1/catalog/preferred/import", map[string]any{"url": "https://169.254.169.254/latest/meta-data", "mode": "feed", "port": 443, "limit": 10}, true)
 	if r.Code == 200 {
 		t.Fatal("metadata fetch accepted")

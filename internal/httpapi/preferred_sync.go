@@ -22,6 +22,10 @@ func (a *API) preferredSyncRoutes(admin *http.ServeMux) {
 		v, e := s.Create(r.Context(), d)
 		catalogResult(w, v, e)
 	})
+	admin.HandleFunc("GET /api/v1/catalog/preferred-sync/{id}/history", func(w http.ResponseWriter, r *http.Request) {
+		v, e := s.History(r.Context(), r.PathValue("id"))
+		catalogResult(w, v, e)
+	})
 	admin.HandleFunc("POST /api/v1/catalog/preferred-sync/{id}/run", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Sync(r.Context(), r.PathValue("id"))
 		catalogResult(w, v, e)
