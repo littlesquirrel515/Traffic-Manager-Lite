@@ -167,7 +167,7 @@ func (s Service) Retry(ctx context.Context, request string) (Result, error) {
 		return r, e
 	}
 	var revokedTarget int
-	if e = s.Store.DB.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_tasks t WHERE t.child_request_id=? AND NOT EXISTS(SELECT 1 FROM subscriber_node_grants g JOIN node_profiles n ON n.id=g.node_id AND n.inbound_id=g.inbound_id WHERE g.subscriber_id=? AND g.inbound_id=t.inbound_id AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations v WHERE v.subscriber_id=g.subscriber_id AND v.node_id=g.node_id))`, request, r.SubscriberID).Scan(&revokedTarget); e != nil {
+	if e = s.Store.DB.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_tasks t WHERE t.child_request_id=? AND NOT EXISTS(SELECT 1 FROM node_profiles n WHERE n.inbound_id=t.inbound_id AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations v WHERE v.subscriber_id=? AND v.node_id=n.id) AND (EXISTS(SELECT 1 FROM subscriber_node_grants g WHERE g.subscriber_id=? AND g.node_id=n.id AND g.inbound_id=n.inbound_id) OR EXISTS(SELECT 1 FROM subscriber_group_grants g JOIN node_groups ng ON ng.id=g.group_id AND ng.enabled=1 JOIN node_group_members m ON m.group_id=g.group_id WHERE g.subscriber_id=? AND m.node_id=n.id)))`, request, r.SubscriberID, r.SubscriberID, r.SubscriberID).Scan(&revokedTarget); e != nil {
 		return r, e
 	}
 	if revokedTarget > 0 {

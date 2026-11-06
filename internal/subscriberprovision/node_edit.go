@@ -105,8 +105,9 @@ func (s Service) previewNodeEdit(ctx context.Context, q catalog.Query, d NodeEdi
 		User    string
 		Before  []subscription.NodeAssignment
 		Desired []string
+		Groups  []string
 		Plan    NodeEditPlan
-	}{d.SubscriberID, old, ids, p})
+	}{d.SubscriberID, old, ids, d.GroupIDs, p})
 	p.Hash = fmt.Sprintf("%x", sha256.Sum256(raw))
 	return p, nil
 }
@@ -156,6 +157,23 @@ func (s Service) ApplyNodeEdit(ctx context.Context, d NodeEditRequest) (Result, 
 			return r, e
 		}
 		if _, e = tx.ExecContext(ctx, "INSERT INTO subscriber_node_revocations VALUES(?,?,?) ON CONFLICT(subscriber_id,node_id) DO NOTHING", d.SubscriberID, n.NodeID, now); e != nil {
+			return r, e
+		}
+	}
+	// Group membership is an explicit confirmed entitlement; changing group
+	// selection never creates a proxy-core account for future members.
+	if _, e = tx.ExecContext(ctx, "DELETE FROM subscriber_group_grants WHERE subscriber_id=?", d.SubscriberID); e != nil {
+		return r, e
+	}
+	for _, group := range d.GroupIDs {
+		if _, e = tx.ExecContext(ctx, "INSERT INTO subscriber_group_grants(subscriber_id,group_id,created_at) VALUES(?,?,?)", d.SubscriberID, group, now); e != nil {
+			return r, e
+		}
+		if _, e = tx.ExecContext(ctx, `DELETE FROM subscriber_node_revocations WHERE subscriber_id=? AND node_id IN (SELECT node_id FROM node_group_members WHERE group_id=?)`, d.SubscriberID, group); e != nil {
+			return r, e
+		}
+		// The UI treats grouped nodes as group entitlements, not independent picks.
+		if _, e = tx.ExecContext(ctx, `DELETE FROM subscriber_node_grants WHERE subscriber_id=? AND node_id IN (SELECT node_id FROM node_group_members WHERE group_id=?)`, d.SubscriberID, group); e != nil {
 			return r, e
 		}
 	}
@@ -234,6 +252,11 @@ func (s Service) RetryNodeEdit(ctx context.Context, id string) (Result, error) {
 	}
 	c, done := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer done()
+	if r.Status == "ready" {
+		if _, e := s.Store.DB.ExecContext(c, `DELETE FROM subscriber_node_grants WHERE subscriber_id=? AND EXISTS (SELECT 1 FROM subscriber_group_grants g JOIN node_group_members m ON m.group_id=g.group_id WHERE g.subscriber_id=subscriber_node_grants.subscriber_id AND m.node_id=subscriber_node_grants.node_id)`, r.SubscriberID); e != nil {
+			return r, e
+		}
+	}
 	_, err := s.Store.DB.ExecContext(c, "UPDATE subscriber_node_edits SET status=?,message=?,checked_at=? WHERE request_id=? AND status!='superseded'", r.Status, r.Message, storage.Stamp(time.Now()), id)
 	return r, err
 }

@@ -57,7 +57,7 @@ func TestNodesDeduplicateClientsAndEnforceExactNodeAuthorization(t *testing.T) {
 	if e != nil || r.Status != "ready" || r.ReadyCount != 1 || f.adds != 1 {
 		t.Fatal(r, e, f.adds)
 	}
-	if count(t, s, "SELECT count(*) FROM subscribers WHERE enabled=1 AND node_authorization_required=1") != 1 || count(t, s, "SELECT count(*) FROM subscriber_node_grants") != 2 || count(t, s, "SELECT count(*) FROM subscriber_credentials") != 1 || count(t, s, "SELECT count(*) FROM subscriber_usage_sources WHERE active=1") != 1 {
+	if count(t, s, "SELECT count(*) FROM subscribers WHERE enabled=1 AND node_authorization_required=1") != 1 || count(t, s, "SELECT count(*) FROM subscriber_node_grants") != 1 || count(t, s, "SELECT count(*) FROM subscriber_credentials") != 1 || count(t, s, "SELECT count(*) FROM subscriber_usage_sources WHERE active=1") != 1 {
 		t.Fatal("nodes duplicated clients, subscribers or billing sources")
 	}
 	again, e := s.CreateNodes(ctx, d)
@@ -68,14 +68,22 @@ func TestNodesDeduplicateClientsAndEnforceExactNodeAuthorization(t *testing.T) {
 	if e != nil || len(out) != 2 || len(reject) != 1 || !strings.Contains(reject[0].Reason, "node_not_authorized") {
 		t.Fatal(out, reject, e)
 	}
-	// Groups never silently expand the user's authority after creation.
+	// A confirmed group entitlement follows membership without new core clients.
 	_, e = catalog.SaveGroup(ctx, s.Store, catalog.Group{ID: group, Name: "Edges", Enabled: true, NodeIDs: []string{a, b, c}})
 	if e != nil {
 		t.Fatal(e)
 	}
 	out, reject, _, e = subscription.ResolveCatalog(ctx, s.Store.DB, subscription.CatalogDefinition{SubscriberID: r.SubscriberID, GroupIDs: []string{group}})
-	if e != nil || len(out) != 2 || len(reject) != 1 {
-		t.Fatal("group expanded user authority", out, reject, e)
+	if e != nil || len(out) != 3 || len(reject) != 0 || f.adds != 1 {
+		t.Fatal("group did not follow membership", out, reject, e)
+	}
+	_, e = catalog.SaveGroup(ctx, s.Store, catalog.Group{ID: group, Name: "Edges", Enabled: true, NodeIDs: []string{a, b}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	out, reject, _, e = subscription.ResolveCatalog(ctx, s.Store.DB, subscription.CatalogDefinition{SubscriberID: r.SubscriberID, NodeIDs: []string{c}})
+	if e != nil || len(out) != 0 || len(reject) != 1 {
+		t.Fatal("removed member still authorized", out, reject, e)
 	}
 	// Granting another entrance for the same user reuses its core client.
 	add := NodeRequest{RequestID: "additional-node-request-001", Subscriber: subscription.Subscriber{ID: r.SubscriberID}, NodeIDs: []string{a, b, c}, Confirmed: true}

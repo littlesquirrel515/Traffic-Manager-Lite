@@ -215,8 +215,8 @@ type CatalogPreview struct {
 }
 
 func expand(ctx context.Context, q catalog.Query, d CatalogDefinition) ([]string, error) {
-	if len(d.NodeIDs)+len(d.GroupIDs) > 500 {
-		return nil, fmt.Errorf("分配上限 500")
+	if len(d.NodeIDs)+len(d.GroupIDs) > 5000 {
+		return nil, fmt.Errorf("分配上限 5000")
 	}
 	ids := []string{}
 	seen := map[string]bool{}
@@ -255,8 +255,8 @@ func expand(ctx context.Context, q catalog.Query, d CatalogDefinition) ([]string
 			return nil, e
 		}
 	}
-	if len(ids) > 500 {
-		return nil, fmt.Errorf("分组展开超过 500 个节点")
+	if len(ids) > 5000 {
+		return nil, fmt.Errorf("分组展开超过 5000 个节点")
 	}
 	return ids, nil
 }
@@ -297,7 +297,7 @@ func ResolveCatalog(ctx context.Context, q catalog.Query, d CatalogDefinition) (
 		}
 		if nodeAuthorizationRequired {
 			var granted int
-			if e = q.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_node_grants WHERE subscriber_id=? AND node_id=? AND inbound_id=?", d.SubscriberID, id, n.InboundID).Scan(&granted); e != nil {
+			if e = q.QueryRowContext(ctx, "SELECT count(*) FROM node_profiles n WHERE n.id=? AND n.inbound_id=? AND (EXISTS(SELECT 1 FROM subscriber_node_grants a WHERE a.subscriber_id=? AND a.node_id=n.id AND a.inbound_id=n.inbound_id) OR EXISTS(SELECT 1 FROM subscriber_group_grants g JOIN node_groups ng ON ng.id=g.group_id AND ng.enabled=1 JOIN node_group_members m ON m.group_id=g.group_id WHERE g.subscriber_id=? AND m.node_id=n.id))", id, n.InboundID, d.SubscriberID, d.SubscriberID).Scan(&granted); e != nil {
 				return nil, nil, 0, e
 			}
 			if granted != 1 {

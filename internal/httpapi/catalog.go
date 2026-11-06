@@ -134,7 +134,7 @@ func (a *API) catalogRoutes(admin *http.ServeMux) {
 		})
 	}
 	admin.HandleFunc("GET /api/v1/catalog/groups", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, `SELECT g.*,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM node_group_members WHERE group_id=g.id ORDER BY sort_order,node_id)) node_ids,(SELECT count(*) FROM catalog_subscription_groups WHERE group_id=g.id) references_count,(SELECT count(DISTINCT a.subscriber_id) FROM subscriber_node_grants a JOIN node_group_members m ON m.node_id=a.node_id WHERE m.group_id=g.id AND NOT EXISTS (SELECT 1 FROM subscriber_node_revocations r WHERE r.subscriber_id=a.subscriber_id AND r.node_id=a.node_id)) subscriber_count FROM node_groups g ORDER BY sort_order,name,id`)
+		a.rows(w, r, `SELECT g.*,(SELECT json_group_array(node_id) FROM (SELECT node_id FROM node_group_members WHERE group_id=g.id ORDER BY sort_order,node_id)) node_ids,(SELECT count(*) FROM catalog_subscription_groups WHERE group_id=g.id) references_count,(SELECT count(DISTINCT subscriber_id) FROM (SELECT a.subscriber_id FROM subscriber_node_grants a JOIN node_group_members m ON m.node_id=a.node_id WHERE m.group_id=g.id AND NOT EXISTS (SELECT 1 FROM subscriber_node_revocations r WHERE r.subscriber_id=a.subscriber_id AND r.node_id=a.node_id) UNION ALL SELECT a.subscriber_id FROM subscriber_group_grants a WHERE a.group_id=g.id)) subscriber_count FROM node_groups g ORDER BY sort_order,name,id`)
 	})
 	for _, method := range []string{"POST /api/v1/catalog/groups", "PATCH /api/v1/catalog/groups/{id}"} {
 		admin.HandleFunc(method, func(w http.ResponseWriter, r *http.Request) {

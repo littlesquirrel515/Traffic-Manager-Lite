@@ -20,6 +20,8 @@ func NodeAssignments(ctx context.Context, q catalog.Query, subscriber string) ([
 	rows, e := q.QueryContext(ctx, `WITH assigned(subscriber_id,node_id,created_at,explicit) AS (
  SELECT subscriber_id,node_id,created_at,1 FROM subscriber_node_grants
  UNION ALL
+ SELECT g.subscriber_id,m.node_id,g.created_at,1 FROM subscriber_group_grants g JOIN node_groups ng ON ng.id=g.group_id AND ng.enabled=1 JOIN node_group_members m ON m.group_id=g.group_id
+ UNION ALL
  SELECT s.subscriber_id,n.node_id,s.created_at,0 FROM catalog_subscriptions s JOIN subscribers u ON u.id=s.subscriber_id JOIN catalog_subscription_nodes n ON n.subscription_id=s.id WHERE u.node_authorization_required=0
  UNION ALL
  SELECT s.subscriber_id,m.node_id,s.created_at,0 FROM catalog_subscriptions s JOIN subscribers u ON u.id=s.subscriber_id JOIN catalog_subscription_groups g ON g.subscription_id=s.id JOIN node_group_members m ON m.group_id=g.group_id WHERE u.node_authorization_required=0

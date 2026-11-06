@@ -35,7 +35,7 @@ func TestV2EmptyInstallReopenAndNoLegacyTables(t *testing.T) {
 	}
 	defer s.Close()
 	var migrations int
-	if e = s.DB.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&migrations); e != nil || migrations != 9 {
+	if e = s.DB.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&migrations); e != nil || migrations != 10 {
 		t.Fatal("baseline and additive migrations were not applied exactly once", migrations, e)
 	}
 }

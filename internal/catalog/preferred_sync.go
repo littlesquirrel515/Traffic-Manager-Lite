@@ -23,6 +23,7 @@ type SyncConfig struct {
 	Template  string   `json:"template_node_id"`
 	Sources   []string `json:"sources"`
 	Count     int      `json:"count"`
+	FollowAll bool     `json:"follow_all"`
 	Minutes   int      `json:"minutes"`
 	Ports     []int    `json:"ports"`
 	Confirmed bool     `json:"confirmed"`
@@ -291,6 +292,7 @@ func (s *PreferredSync) Create(ctx context.Context, d SyncConfig) (SyncJob, erro
 		return empty, e
 	}
 	d.Confirmed = false
+	d.FollowAll = true
 	if _, e = tx.ExecContext(ctx, `INSERT INTO preferred_sync_jobs VALUES(?,?,?,?,?, ?,1,1,?,?,?,?)`, id, d.Name, d.Template, group, encode(d), encode(states), now.Add(time.Duration(d.Minutes)*time.Minute).Unix(), storage.Stamp(now), storage.Stamp(now), syncStatus(states)); e != nil {
 		return empty, e
 	}
@@ -475,6 +477,71 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 				return fmt.Errorf("同步入口已修改或共享；保留原发布")
 			}
 			v.current = preferred.Address{Address: n.Profile.Address, Port: n.Profile.Port}
+		}
+		if j.Config.FollowAll && len(candidates) > len(slots) {
+			if len(candidates) > 500 {
+				return fmt.Errorf("有效候选超过500，已保留上次发布，请拆分同步组")
+			}
+			// Never create new nodes from a partial or stale set of sources.
+			allFresh := true
+			for _, source := range states {
+				allFresh = allFresh && source.Status == "ok"
+			}
+			if allFresh {
+				template, err := ResolveDefinition(ctx, tx, j.Config.Template)
+				if err != nil || !PreferredTemplate(template) {
+					return fmt.Errorf("同步模板不可用，保留原发布")
+				}
+				used := map[string]bool{}
+				for _, slot := range slots {
+					used[addressKey(slot.current)] = true
+				}
+				for _, a := range candidates {
+					if len(slots) >= len(candidates) {
+						break
+					}
+					if used[addressKey(a)] {
+						continue
+					}
+					pos := len(slots)
+					created, err := createPreferredVariant(ctx, tx, template, a, clipped(fmt.Sprintf("%s-%02d", clipped(j.Config.Name, 180), pos+1), 190))
+					if err != nil {
+						return err
+					}
+					n, err := ResolveDefinition(ctx, tx, created.NodeID)
+					if err != nil {
+						return err
+					}
+					var profile string
+					if err = tx.QueryRowContext(ctx, "SELECT profile_json FROM node_endpoints WHERE id=?", created.EndpointID).Scan(&profile); err != nil {
+						return err
+					}
+					v := syncSlot{node: created.NodeID, endpoint: created.EndpointID, binding: created.BindingID, revision: slotRevision(n), profile: profile, current: a, active: true}
+					if _, err = tx.ExecContext(ctx, "INSERT INTO preferred_sync_slots VALUES(?,?,?,?,?,?,?,1)", j.ID, pos, v.node, v.endpoint, v.binding, v.revision, v.profile); err != nil {
+						return err
+					}
+					if _, err = tx.ExecContext(ctx, "INSERT INTO node_group_members VALUES(?,?,?)", j.GroupID, v.node, pos); err != nil {
+						return err
+					}
+					slots = append(slots, v)
+					used[addressKey(a)] = true
+				}
+				if len(slots) < len(candidates) {
+					return fmt.Errorf("无法建立足够的同步入口，保留原发布")
+				}
+				j.Config.Count = len(slots)
+				if _, err = tx.ExecContext(ctx, "UPDATE preferred_sync_jobs SET config_json=? WHERE id=?", encode(j.Config), j.ID); err != nil {
+					return err
+				}
+			}
+		}
+		// A source error must not make a formerly published endpoint disappear.
+		allFresh := true
+		for _, source := range states {
+			allFresh = allFresh && source.Status == "ok"
+		}
+		if !allFresh && len(candidates) < len(slots) {
+			return fmt.Errorf("来源不完整，保留上次发布")
 		}
 		next := chooseSlots(slots, candidates)
 		for i, v := range slots {

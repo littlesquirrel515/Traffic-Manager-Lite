@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,4 +154,23 @@ func TestRuntimeRemovalBlocksCredentialsWithoutDependingOnStatsOrOnline(t *testi
 		t.Fatal(err)
 	}
 	check(0)
+}
+
+func TestExpandedSubscriptionSelectionCanContainMultipleLargeGroups(t *testing.T) {
+	s, _, _ := catalogFixture(t)
+	ids := make([]string, 1200)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("node-%d", i)
+	}
+	got, err := ExpandNodeSelection(context.Background(), s.DB, ids, nil)
+	if err != nil || len(got) != len(ids) {
+		t.Fatalf("large selection: %d, %v", len(got), err)
+	}
+	ids = make([]string, 5001)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("node-%d", i)
+	}
+	if _, err = ExpandNodeSelection(context.Background(), s.DB, ids, nil); err == nil {
+		t.Fatal("unbounded selection accepted")
+	}
 }

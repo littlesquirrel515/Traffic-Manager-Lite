@@ -68,8 +68,8 @@ func (s Service) PlanNodes(ctx context.Context, d NodeRequest) (NodePlan, error)
 }
 func (s Service) planNodes(ctx context.Context, q catalog.Query, d NodeRequest) (NodePlan, error) {
 	p := NodePlan{Nodes: []PlannedNode{}, Targets: []NodeTarget{}, Ready: true}
-	if len(d.NodeIDs)+len(d.GroupIDs) > 500 {
-		return p, fmt.Errorf("最多选择 500 个节点或分组")
+	if len(d.NodeIDs)+len(d.GroupIDs) > 5000 {
+		return p, fmt.Errorf("最多选择 5000 个节点或分组")
 	}
 	ids := []string{}
 	seen := map[string]bool{}
@@ -105,8 +105,8 @@ func (s Service) planNodes(ctx context.Context, q catalog.Query, d NodeRequest) 
 			return p, e
 		}
 	}
-	if len(ids) == 0 || len(ids) > 500 {
-		return p, fmt.Errorf("请选择 1–500 个代理节点（分组按当前成员展开）")
+	if len(ids) == 0 || len(ids) > 5000 {
+		return p, fmt.Errorf("请选择 1–5000 个代理节点（分组按当前成员展开）")
 	}
 	targets := map[string]bool{}
 	assigned := map[string]bool{}
@@ -115,7 +115,22 @@ func (s Service) planNodes(ctx context.Context, q catalog.Query, d NodeRequest) 
 		if e != nil {
 			return p, e
 		}
+		var editChild int
+		if d.RequestID != "" {
+			if e = q.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_edits WHERE subscriber_id=? AND status='pending' AND json_extract(NULLIF(addition_json,''),'$.request_id')=?`, d.Subscriber.ID, d.RequestID).Scan(&editChild); e != nil {
+				return p, e
+			}
+		}
 		for _, n := range old {
+			if editChild > 0 {
+				var explicit int
+				if e = q.QueryRowContext(ctx, `SELECT count(*) FROM subscriber_node_grants WHERE subscriber_id=? AND node_id=?`, d.Subscriber.ID, n.NodeID).Scan(&explicit); e != nil {
+					return p, e
+				}
+				if explicit == 0 {
+					continue
+				}
+			}
 			assigned[n.NodeID] = true
 		}
 	}
@@ -233,7 +248,8 @@ func (s Service) planNodes(ctx context.Context, q catalog.Query, d NodeRequest) 
 		Subscriber string
 		Nodes      []catalog.Node
 		Targets    []NodeTarget
-	}{d.Subscriber.ID, definitions, p.Targets})
+		Groups     []string
+	}{d.Subscriber.ID, definitions, p.Targets, d.GroupIDs})
 	p.Hash = fmt.Sprintf("%x", sha256.Sum256(raw))
 	return p, nil
 }
@@ -294,9 +310,29 @@ func (s Service) CreateNodes(ctx context.Context, d NodeRequest) (NodeResult, er
 		if _, err = tx.ExecContext(ctx, `INSERT INTO subscriber_node_requests(request_id,request_hash,subscriber_id,plan_json,requested_enabled,activation_revision,checked_at) VALUES(?,?,?,?,?,?,?)`, d.RequestID, hash, id, string(data), d.Subscriber.Enabled, revision, storage.Stamp(time.Now())); err != nil {
 			return err
 		}
+		for _, group := range d.GroupIDs {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO subscriber_group_grants(subscriber_id,group_id,created_at) VALUES(?,?,?) ON CONFLICT(subscriber_id,group_id) DO NOTHING`, id, group, storage.Stamp(time.Now())); err != nil {
+				return err
+			}
+		}
 		for _, n := range plan.Nodes {
 			if _, err = tx.ExecContext(ctx, "DELETE FROM subscriber_node_revocations WHERE subscriber_id=? AND node_id=?", id, n.ID); err != nil {
 				return err
+			}
+			grouped := false
+			for _, group := range d.GroupIDs {
+				var nMembers int
+				if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM node_group_members WHERE group_id=? AND node_id=?", group, n.ID).Scan(&nMembers); err != nil {
+					return err
+				}
+				grouped = grouped || nMembers > 0
+			}
+			explicit := false
+			for _, node := range d.NodeIDs {
+				explicit = explicit || node == n.ID
+			}
+			if grouped && !explicit {
+				continue
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO subscriber_node_grants(subscriber_id,node_id,inbound_id,created_at) VALUES(?,?,?,?) ON CONFLICT(subscriber_id,node_id) DO NOTHING`, id, n.ID, n.InboundID, storage.Stamp(time.Now())); err != nil {
 				return err
@@ -396,7 +432,7 @@ func (s Service) RetryNodes(ctx context.Context, request string) (NodeResult, er
 			break
 		}
 		var authorized int
-		if e = s.Store.DB.QueryRowContext(work, `SELECT count(*) FROM subscriber_node_grants g JOIN node_profiles n ON n.id=g.node_id AND n.inbound_id=g.inbound_id WHERE g.subscriber_id=? AND g.inbound_id=? AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations v WHERE v.subscriber_id=g.subscriber_id AND v.node_id=g.node_id)`, r.SubscriberID, t.InboundID).Scan(&authorized); e != nil {
+		if e = s.Store.DB.QueryRowContext(work, `SELECT count(*) FROM node_profiles n WHERE n.inbound_id=? AND NOT EXISTS(SELECT 1 FROM subscriber_node_revocations v WHERE v.subscriber_id=? AND v.node_id=n.id) AND (EXISTS(SELECT 1 FROM subscriber_node_grants g WHERE g.subscriber_id=? AND g.node_id=n.id AND g.inbound_id=n.inbound_id) OR EXISTS(SELECT 1 FROM subscriber_group_grants g JOIN node_groups ng ON ng.id=g.group_id AND ng.enabled=1 JOIN node_group_members m ON m.group_id=g.group_id WHERE g.subscriber_id=? AND m.node_id=n.id))`, t.InboundID, r.SubscriberID, r.SubscriberID, r.SubscriberID).Scan(&authorized); e != nil {
 			return r, e
 		}
 		if authorized == 0 {
