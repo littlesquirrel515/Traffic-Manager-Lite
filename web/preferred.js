@@ -34,7 +34,7 @@ const syncStates={pending:'等待同步',ok:'已同步',degraded:'部分可用',
 views.nodegroups=async()=>{
  const [page,jobs]=await Promise.all([preferredGroupsPage(),api('catalog/preferred-sync')]);
  return page+`<section class="card panel spacer"><div class="toolbar"><h2>定时优选同步</h2><button data-action="preferred-sync-create" class="primary">＋ 新建同步组</button></div><p class="muted">给订阅用户分配同步组一次即可。来源增减时自动维护有效节点；旧数据中完整授权的组会转换为动态授权，部分授权保持原样。新增入站需已有可用用户凭据。</p>${table(['同步组','状态 / 间隔','来源 / 最近有效','最近发布','操作'],jobs.map(j=>[
- esc(j.config.name)+`<small>${j.config.count} 个已建入口</small>`,
+ esc(j.config.name)+`<small>当前发布 ${j.active_count} 个 · 候选 ${j.candidate_count} 个 · 已建 ${j.config.count} 个 · 上限 ${j.config.limit||"自动（最多 500）"}</small>`+(j.limit_reached?`<small>候选超过上限或单来源截断，部分候选未发布</small>`:''),
  esc(j.enabled?(syncStates[j.status]||j.status):'已暂停')+`<small>${j.config.minutes} 分钟</small>`,
  j.config.sources.map((u,i)=>`<div>${esc(new URL(u).hostname+new URL(u).pathname)}<small>${esc(syncStates[j.sources[i]?.status]||'未知')} · ${date(j.sources[i]?.last_good)}</small></div>`).join(''),
  date(j.last_success)+`<small>最近尝试 ${date(j.last_attempt)}</small>`,
@@ -48,12 +48,12 @@ actions['preferred-sync-create']=async()=>{
  field('name','同步组名称','US 优选')+
  field('template_node_id','节点模板',nodes[0].id,'select',nodes.map(n=>[n.id,n.name]))+
  field('sources','公开 HTTPS 来源，每行一个','https://bestcf.pages.dev/s5gy/us.txt\nhttps://bestcf.pages.dev/tiancheng2/us.txt','textarea')+
- field('count','固定入口数量（0 = 首次全部，最多 500）',0,'number')+
+ field('limit','最多发布节点数（0 = 自动，最多 500）',0,'number')+
  field('minutes','同步间隔（分钟）',10,'number')+
  field('extra_port','同时允许 8443（需确认线路兼容）',false,'checkbox')+
- '<p class="wide info-box">同步只替换地址和端口，保留模板的 Host、SNI 和协议参数。填 0 时按首次读取的全部有效去重候选建立入口（最多 500）；之后来源数量变化时自动维护有效入口。创建后请给订阅用户分配该组一次。建议保留原域名节点作为备用。来源失败时保留已有结果。</p>'+
+ '<p class="wide info-box">同步只替换地址和端口，保留模板的 Host、SNI 和协议参数。上限是最多发布的节点数，填 0 表示自动采用系统上限 500；当前候选不足上限时只发布实际数量，以后随来源增减。超过上限的候选不会发布。创建后请给订阅用户分配该组一次。建议保留原域名节点作为备用。来源失败时保留已有结果。</p>'+
  field('confirmed','确认信任这些来源并允许定时替换连接地址',false,'checkbox'),
- async d=>{await api('catalog/preferred-sync','POST',{name:d.name,template_node_id:d.template_node_id,sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),count:Number(d.count),minutes:Number(d.minutes),ports:d.extra_port?[443,8443]:[443],confirmed:!!d.confirmed});notice('同步组已创建，请到订阅用户分配该组；来源变化会自动更新该组有效节点。')});
+ async d=>{await api('catalog/preferred-sync','POST',{name:d.name,template_node_id:d.template_node_id,sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),limit:Number(d.limit),minutes:Number(d.minutes),ports:d.extra_port?[443,8443]:[443],confirmed:!!d.confirmed});notice('同步组已创建，请到订阅用户分配该组；来源变化会自动更新该组有效节点。')});
  $('#fields [name=sources]').maxLength=16400;
 };
 actions['preferred-sync-run']=async b=>{const j=await api('catalog/preferred-sync/'+b.dataset.id+'/run','POST',{});await render();notice(syncStates[j.status]||j.status)};
@@ -63,9 +63,9 @@ actions['preferred-sync-edit']=async b=>{
  const j=(await api('catalog/preferred-sync')).find(v=>v.id===b.dataset.id);if(!j)throw Error('同步组不存在');
  edit('编辑同步来源与容量',field('sources','公开 HTTPS 来源，每行一个',j.config.sources.join('\n'),'textarea')+
  field('minutes','同步间隔（分钟）',j.config.minutes,'number')+
- field('count','固定入口数量（0 = 当前全部，最多 500）',j.config.count,'number')+
- '<p class="wide info-box">可以立即扩容；原入口与组授权保持不变。同步成功后也会根据来源自动维护有效入口。目前不支持手动删除入口。</p>'+
+ field('limit','最多发布节点数（0 = 自动，最多 500）',j.config.limit??0,'number')+
+ '<p class="wide info-box">上限是最多发布的节点数，0 表示自动采用系统上限 500；不足上限时发布实际有效数量。降低上限会在下次同步时暂停多余入口，保留节点身份和授权；同步失败时保留上次结果。</p>'+
  field('confirmed','确认信任这些来源并允许更新已授权入口',false,'checkbox'),
- d=>api('catalog/preferred-sync/'+j.id+'/sources','PUT',{sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),minutes:Number(d.minutes),count:Number(d.count),revision:j.revision,confirmed:d.confirmed}));
+ d=>api('catalog/preferred-sync/'+j.id+'/sources','PUT',{sources:d.sources.split(/\r?\n/).map(v=>v.trim()).filter(Boolean),minutes:Number(d.minutes),limit:Number(d.limit),revision:j.revision,confirmed:d.confirmed}));
  $('#fields [name=sources]').maxLength=16400;
 };

@@ -178,52 +178,106 @@ func TestPreferredSyncAllSourcesCreatesMoreThanThirtyWithoutGrant(t *testing.T) 
 	for i := 46; i <= 60; i++ {
 		lines = append(lines, fmt.Sprintf("104.16.1.%d:443", i))
 	}
-	newCount := 55
-	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: job.Revision, Count: &newCount, Confirmed: true}); err != nil {
+	limit := 500
+	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: job.Revision, Limit: &limit, Confirmed: true}); err != nil {
 		t.Fatal(err)
 	}
+	jobs, err := worker.List(ctx)
+	if err != nil || jobs[0].Config.Limit == nil || *jobs[0].Config.Limit != 500 {
+		t.Fatalf("limit not retained: %v %v", jobs, err)
+	}
+	updated, err := worker.Sync(ctx, job.ID)
+	if err != nil || updated.Config.Count != 60 {
+		t.Fatalf("candidate shortage must publish available nodes: %d %v", updated.Config.Count, err)
+	}
+	if updated.Config.Limit == nil || *updated.Config.Limit != 500 {
+		t.Fatal("configured limit lost during sync")
+	}
 	newIDs, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
-	if err != nil || len(newIDs) != 55 {
-		t.Fatalf("expanded %d %v", len(newIDs), err)
+	if err != nil || len(newIDs) != 60 {
+		t.Fatal(len(newIDs), err)
 	}
 	for i := range ids {
 		if ids[i] != newIDs[i] {
 			t.Fatal("existing node identity changed")
 		}
 	}
-	jobs, err := worker.List(ctx)
+	jobs, err = worker.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shrink := 20
-	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: jobs[0].Revision, Count: &shrink, Confirmed: true}); err == nil {
-		t.Fatal("unexpected shrink")
-	}
-	updated, err := worker.Sync(ctx, job.ID)
-	if err != nil {
+	limit = 20
+	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: jobs[0].Revision, Limit: &limit, Confirmed: true}); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Config.Count != 60 {
-		t.Fatalf("automatic growth: %d", updated.Config.Count)
+	if _, err = worker.Sync(ctx, job.ID); err != nil {
+		t.Fatal(err)
 	}
-	grown, err := subscription.ExpandNodeSelection(ctx, s.DB, nil, []string{job.GroupID})
-	if err != nil || len(grown) != 60 {
-		t.Fatalf("automatic growth nodes: %d %v", len(grown), err)
+	var active int
+	if err = s.DB.QueryRow("select count(*) from preferred_sync_slots where job_id=? and active=1", job.ID).Scan(&active); err != nil || active != 20 {
+		t.Fatalf("lower limit: %d %v", active, err)
+	}
+	jobs, err = worker.List(ctx)
+	if err != nil || !jobs[0].LimitReached || jobs[0].CandidateCount != 60 || jobs[0].ActiveCount != 20 {
+		t.Fatalf("limit status: %v %v", jobs, err)
+	}
+	limit = 0
+	if err = worker.EditSources(ctx, job.ID, catalog.SyncSourceEdit{Sources: job.Config.Sources, Minutes: 10, Revision: jobs[0].Revision, Limit: &limit, Confirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err = worker.List(ctx)
+	if err != nil || jobs[0].Config.Limit == nil || *jobs[0].Config.Limit != 0 {
+		t.Fatalf("auto mode was not persisted: %v %v", jobs, err)
+	}
+	if _, err = worker.Sync(ctx, job.ID); err != nil {
+		t.Fatal(err)
 	}
 	lines = lines[:10]
 	if _, err = worker.Sync(ctx, job.ID); err != nil {
 		t.Fatal(err)
 	}
-	var active int
 	if err = s.DB.QueryRow("select count(*) from preferred_sync_slots where job_id=? and active=1", job.ID).Scan(&active); err != nil || active != 10 {
-		t.Fatalf("automatic shrink publication %d %v", active, err)
+		t.Fatalf("candidate decrease: %d %v", active, err)
 	}
 	var grants int
 	if err = s.DB.QueryRow("select count(*) from subscriber_node_grants").Scan(&grants); err != nil || grants != 0 {
 		t.Fatalf("unexpected grants %d %v", grants, err)
 	}
+	max := 500
+	short, err := worker.Create(ctx, catalog.SyncConfig{Name: "short-feed", Template: tpl.NodeID, Sources: []string{"https://a.example.com/a"}, Limit: &max, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err != nil || short.Config.Count != 10 || short.Config.Limit == nil || *short.Config.Limit != 500 {
+		t.Fatalf("initial 500 limit with 10 candidates: %#v %v", short.Config, err)
+	}
 	_, err = worker.Create(ctx, catalog.SyncConfig{Name: "bad", Template: tpl.NodeID, Sources: []string{"https://a.example.com/a", "https://bad.example.com/a"}, Count: 0, Minutes: 10, Ports: []int{443}, Confirmed: true})
 	if err == nil {
 		t.Fatal("failed source must not silently create incomplete group")
+	}
+}
+
+func TestPreferredSyncLongSourceUsesLimitWithoutRejecting(t *testing.T) {
+	s, _ := fixture(t)
+	ctx := context.Background()
+	inbound, err := remote.SaveManual(ctx, s, remote.Inbound{InstanceID: 1, Tag: "many-source", Profile: core.NodeProfile{Protocol: "vless", Transport: "ws", Path: "/ws", Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl, err := catalog.CreateConnection(ctx, s, catalog.Connection{InboundID: inbound, Name: "template", Enabled: true, Profile: map[string]any{"address": "origin.example.com", "port": 443, "sni": "origin.example.com", "host": "origin.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]string, 510)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("104.16.%d.%d:443", i/254+1, i%254+1)
+	}
+	w := &catalog.PreferredSync{Store: s}
+	w.TestSetFetcher(func(context.Context, string, string) (string, error) { return strings.Join(lines, "\n"), nil })
+	limit := 4
+	j, err := w.Create(ctx, catalog.SyncConfig{Name: "long source", Template: tpl.NodeID, Sources: []string{"https://a.example.com/list"}, Limit: &limit, Minutes: 10, Ports: []int{443}, Confirmed: true})
+	if err != nil || j.Config.Count != 4 {
+		t.Fatalf("long source failed: %#v %v", j.Config, err)
+	}
+	jobs, err := w.List(ctx)
+	if err != nil || len(jobs) != 1 || !jobs[0].LimitReached || jobs[0].Sources[0].Truncated != 10 || jobs[0].ActiveCount != 4 {
+		t.Fatalf("missing truncation disclosure: %#v %v", jobs, err)
 	}
 }

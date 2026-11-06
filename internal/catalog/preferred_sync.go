@@ -23,32 +23,38 @@ type SyncConfig struct {
 	Template  string   `json:"template_node_id"`
 	Sources   []string `json:"sources"`
 	Count     int      `json:"count"`
+	Limit     *int     `json:"limit,omitempty"`
 	FollowAll bool     `json:"follow_all"`
 	Minutes   int      `json:"minutes"`
 	Ports     []int    `json:"ports"`
 	Confirmed bool     `json:"confirmed"`
 }
 type sourceSnapshot struct {
-	LastGood int64               `json:"last_good"`
-	Entries  []preferred.Address `json:"entries"`
-	Status   string              `json:"status"`
+	LastGood  int64               `json:"last_good"`
+	Entries   []preferred.Address `json:"entries"`
+	Status    string              `json:"status"`
+	Truncated int                 `json:"truncated,omitempty"`
 }
 type SyncJob struct {
-	ID          string             `json:"id"`
-	GroupID     string             `json:"group_id"`
-	Config      SyncConfig         `json:"config"`
-	Enabled     bool               `json:"enabled"`
-	Revision    int                `json:"revision"`
-	LastAttempt string             `json:"last_attempt"`
-	LastSuccess string             `json:"last_success"`
-	Status      string             `json:"status"`
-	Sources     []SyncSourceStatus `json:"sources"`
-	snapshots   []sourceSnapshot
+	ID             string             `json:"id"`
+	GroupID        string             `json:"group_id"`
+	Config         SyncConfig         `json:"config"`
+	Enabled        bool               `json:"enabled"`
+	Revision       int                `json:"revision"`
+	LastAttempt    string             `json:"last_attempt"`
+	LastSuccess    string             `json:"last_success"`
+	Status         string             `json:"status"`
+	Sources        []SyncSourceStatus `json:"sources"`
+	ActiveCount    int                `json:"active_count"`
+	CandidateCount int                `json:"candidate_count"`
+	LimitReached   bool               `json:"limit_reached"`
+	snapshots      []sourceSnapshot
 }
 type SyncSourceStatus struct {
-	Status   string `json:"status"`
-	LastGood string `json:"last_good"`
-	Count    int    `json:"count"`
+	Status    string `json:"status"`
+	LastGood  string `json:"last_good"`
+	Count     int    `json:"count"`
+	Truncated int    `json:"truncated,omitempty"`
 }
 type PreferredSync struct {
 	Store *storage.Store
@@ -59,8 +65,8 @@ type PreferredSync struct {
 
 func validateSync(d *SyncConfig) error {
 	d.Name = strings.TrimSpace(d.Name)
-	if !d.Confirmed || !validName(d.Name) || d.Count < 0 || d.Count > 500 || d.Minutes < 5 || d.Minutes > 1440 || len(d.Sources) < 1 || len(d.Sources) > 8 || len(d.Ports) < 1 || len(d.Ports) > 2 {
-		return fmt.Errorf("请确认同步计划：来源1–8个、入口0–500个（0表示首次有效候选全部创建）、间隔5–1440分钟")
+	if !d.Confirmed || !validName(d.Name) || d.Count < 0 || d.Count > 500 || d.Limit != nil && (*d.Limit < 0 || *d.Limit > 500) || d.Minutes < 5 || d.Minutes > 1440 || len(d.Sources) < 1 || len(d.Sources) > 8 || len(d.Ports) < 1 || len(d.Ports) > 2 {
+		return fmt.Errorf("请确认同步计划：来源1–8个、节点上限0–500个（0表示系统上限500）、间隔5–1440分钟")
 	}
 	seen := map[string]bool{}
 	for i, raw := range d.Sources {
@@ -102,13 +108,10 @@ func (s *PreferredSync) collect(ctx context.Context, d SyncConfig, old []sourceS
 			if e == nil {
 				var p preferred.Parsed
 				p, e = preferred.Parse(text, 443, 500)
-				if e == nil && p.Truncated > 0 {
-					e = fmt.Errorf("来源超过500条有效候选")
-				}
 				if e == nil {
 					entries := filterSyncAddresses(ctx, p.Entries, d.Ports)
 					if len(entries) > 0 {
-						out[i] = sourceSnapshot{time.Now().Unix(), entries, "ok"}
+						out[i] = sourceSnapshot{LastGood: time.Now().Unix(), Entries: entries, Status: "ok", Truncated: p.Truncated}
 						return
 					}
 				}
@@ -160,6 +163,14 @@ func filterSyncAddresses(ctx context.Context, entries []preferred.Address, ports
 	return out
 }
 func addressKey(a preferred.Address) string { return fmt.Sprintf("%s/%d", a.Address, a.Port) }
+
+func syncLimit(d SyncConfig) int {
+	if d.Limit == nil || *d.Limit == 0 {
+		return 500
+	}
+	return *d.Limit
+}
+
 func syncCandidates(states []sourceSnapshot, now time.Time) []preferred.Address {
 	out := []preferred.Address{}
 	seen := map[string]bool{}
@@ -204,7 +215,7 @@ func syncScan(row interface{ Scan(...any) error }) (SyncJob, error) {
 	}
 	j.Sources = []SyncSourceStatus{}
 	for _, s := range j.snapshots {
-		v := SyncSourceStatus{Status: s.Status, Count: len(s.Entries)}
+		v := SyncSourceStatus{Status: s.Status, Count: len(s.Entries), Truncated: s.Truncated}
 		if s.LastGood > 0 {
 			v.LastGood = storage.Stamp(time.Unix(s.LastGood, 0))
 			if time.Since(time.Unix(s.LastGood, 0)) >= sourceMaxAge {
@@ -232,7 +243,24 @@ func (s *PreferredSync) List(ctx context.Context) ([]SyncJob, error) {
 		}
 		out = append(out, j)
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return nil, e
+	}
+	rows.Close()
+	for i := range out {
+		if e = s.Store.DB.QueryRowContext(ctx, "SELECT count(*) FROM preferred_sync_slots WHERE job_id=? AND active=1", out[i].ID).Scan(&out[i].ActiveCount); e != nil {
+			return nil, e
+		}
+		out[i].CandidateCount = len(syncCandidates(out[i].snapshots, time.Now()))
+		out[i].LimitReached = out[i].CandidateCount > syncLimit(out[i].Config)
+		for _, source := range out[i].snapshots {
+			if source.Truncated > 0 {
+				out[i].LimitReached = true
+			}
+		}
+	}
+	return out, nil
 }
 func (s *PreferredSync) Create(ctx context.Context, d SyncConfig) (SyncJob, error) {
 	var empty SyncJob
@@ -257,20 +285,20 @@ func (s *PreferredSync) Create(ctx context.Context, d SyncConfig) (SyncJob, erro
 	if len(candidates) == 0 {
 		return empty, fmt.Errorf("首次同步没有有效候选，请检查来源和端口")
 	}
-	if d.Count == 0 {
-		for i, source := range states {
-			if source.Status != "ok" {
-				return empty, fmt.Errorf("来源 %d 未完整读取（可能超出500条），无法创建全部候选", i+1)
-			}
+	for i, source := range states {
+		if source.Status != "ok" {
+			return empty, fmt.Errorf("来源 %d 未能读取，请检查后重试", i+1)
 		}
-		if len(candidates) > 500 {
-			return empty, fmt.Errorf("去重后有效候选 %d 个，超过单组上限500；请拆分来源", len(candidates))
-		}
-		d.Count = len(candidates)
 	}
-	if len(candidates) < d.Count {
-		return empty, fmt.Errorf("首次同步只有 %d 个有效候选，请减少入口数量或检查来源", len(candidates))
+	// Older clients sent count as the requested capacity; remember it as a limit.
+	if d.Limit == nil {
+		limit := d.Count
+		d.Limit = &limit
 	}
+	if len(candidates) > syncLimit(d) {
+		candidates = candidates[:syncLimit(d)]
+	}
+	d.Count = len(candidates)
 	tx, e := s.Store.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return empty, e
@@ -434,6 +462,9 @@ func (s *PreferredSync) apply(ctx context.Context, j SyncJob, states []sourceSna
 	}
 	now := time.Now()
 	candidates := syncCandidates(states, now)
+	if len(candidates) > syncLimit(j.Config) {
+		candidates = candidates[:syncLimit(j.Config)]
+	}
 	status := syncStatus(states)
 	success := j.LastSuccess
 	fresh := false
@@ -619,7 +650,8 @@ type SyncSourceEdit struct {
 	Sources   []string `json:"sources"`
 	Minutes   int      `json:"minutes"`
 	Revision  int      `json:"revision"`
-	Count     *int     `json:"count"`
+	Count     *int     `json:"count"` // legacy clients: interpreted as a limit
+	Limit     *int     `json:"limit"`
 	Confirmed bool     `json:"confirmed"`
 }
 
@@ -628,7 +660,12 @@ func (s *PreferredSync) EditSources(ctx context.Context, id string, d SyncSource
 		return fmt.Errorf("已有同步正在执行，请稍后重试")
 	}
 	defer s.mu.Unlock()
-	j, e := syncScan(s.Store.DB.QueryRowContext(ctx, "SELECT "+syncColumns+" FROM preferred_sync_jobs WHERE id=?", id))
+	tx, e := s.Store.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	j, e := syncScan(tx.QueryRowContext(ctx, "SELECT "+syncColumns+" FROM preferred_sync_jobs WHERE id=?", id))
 	if e != nil {
 		return e
 	}
@@ -639,55 +676,13 @@ func (s *PreferredSync) EditSources(ctx context.Context, id string, d SyncSource
 	config.Sources = d.Sources
 	config.Minutes = d.Minutes
 	config.Confirmed = d.Confirmed
-	desired := config.Count
-	if d.Count != nil {
-		desired = *d.Count
+	if d.Limit != nil {
+		config.Limit = d.Limit
+	} else if d.Count != nil {
+		config.Limit = d.Count
 	}
-	config.Count = desired
 	if e = validateSync(&config); e != nil {
 		return e
-	}
-	var states []sourceSnapshot
-	var candidates []preferred.Address
-	if desired == 0 || desired > j.Config.Count {
-		if !j.Enabled {
-			return fmt.Errorf("同步组已暂停，请恢复后再扩容")
-		}
-		states = s.collect(ctx, config, nil)
-		for i, v := range states {
-			if v.Status != "ok" {
-				return fmt.Errorf("来源 %d 未完整读取，无法扩容", i+1)
-			}
-		}
-		candidates = syncCandidates(states, time.Now())
-		if desired == 0 {
-			desired = len(candidates)
-		}
-		if desired > 500 {
-			return fmt.Errorf("有效候选超过500，请拆分来源")
-		}
-		if desired < j.Config.Count {
-			return fmt.Errorf("当前有效候选不足原有入口数，不支持缩容")
-		}
-		if len(candidates) < desired {
-			return fmt.Errorf("只有 %d 个有效候选，无法扩容至 %d", len(candidates), desired)
-		}
-	}
-	if desired < j.Config.Count {
-		return fmt.Errorf("暂不支持缩容，以免删除已授权节点")
-	}
-	config.Count = desired
-	tx, e := s.Store.DB.BeginTx(ctx, nil)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
-	current, e := syncScan(tx.QueryRowContext(ctx, "SELECT "+syncColumns+" FROM preferred_sync_jobs WHERE id=?", id))
-	if e != nil {
-		return e
-	}
-	if current.Revision != j.Revision {
-		return fmt.Errorf("任务已变化，请重新打开编辑")
 	}
 	snapshots := make([]sourceSnapshot, len(config.Sources))
 	for i, u := range config.Sources {
@@ -697,82 +692,6 @@ func (s *PreferredSync) EditSources(ctx context.Context, id string, d SyncSource
 				break
 			}
 		}
-	}
-	if desired > j.Config.Count {
-		template, err := ResolveDefinition(ctx, tx, j.Config.Template)
-		if err != nil || !PreferredTemplate(template) {
-			return fmt.Errorf("原节点模板不可用，请检查模板")
-		}
-		rows, err := tx.QueryContext(ctx, "SELECT node_id,endpoint_id,binding_id,expected_revision,expected_profile FROM preferred_sync_slots WHERE job_id=? ORDER BY position", id)
-		if err != nil {
-			return err
-		}
-		slots := []syncSlot{}
-		for rows.Next() {
-			var v syncSlot
-			if err = rows.Scan(&v.node, &v.endpoint, &v.binding, &v.revision, &v.profile); err != nil {
-				rows.Close()
-				return err
-			}
-			slots = append(slots, v)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if len(slots) != j.Config.Count {
-			return fmt.Errorf("同步入口数量已变化")
-		}
-		used := map[string]bool{}
-		for _, v := range slots {
-			n, err := ResolveDefinition(ctx, tx, v.node)
-			if err != nil || !PreferredTemplate(n) || n.EndpointID == nil || n.BindingID == nil || *n.EndpointID != v.endpoint || *n.BindingID != v.binding || slotRevision(n) != v.revision {
-				return fmt.Errorf("同步入口已被修改或停用，请先处理")
-			}
-			var profile string
-			var refs, variants int
-			if err = tx.QueryRowContext(ctx, `SELECT profile_json,(SELECT count(*) FROM inbound_endpoint_bindings WHERE endpoint_id=?),(SELECT count(*) FROM node_profiles WHERE endpoint_id=?) FROM node_endpoints WHERE id=?`, v.endpoint, v.endpoint, v.endpoint).Scan(&profile, &refs, &variants); err != nil {
-				return err
-			}
-			if profile != v.profile || refs != 1 || variants != 1 {
-				return fmt.Errorf("同步入口已修改或共享，请先处理")
-			}
-			used[addressKey(preferred.Address{Address: n.Profile.Address, Port: n.Profile.Port})] = true
-		}
-		pos := j.Config.Count
-		for _, a := range candidates {
-			if pos >= desired {
-				break
-			}
-			if used[addressKey(a)] {
-				continue
-			}
-			created, err := createPreferredVariant(ctx, tx, template, a, clipped(fmt.Sprintf("%s-%02d", clipped(config.Name, 180), pos+1), 190))
-			if err != nil {
-				return err
-			}
-			n, err := ResolveDefinition(ctx, tx, created.NodeID)
-			if err != nil {
-				return err
-			}
-			var profile string
-			if err = tx.QueryRowContext(ctx, "SELECT profile_json FROM node_endpoints WHERE id=?", created.EndpointID).Scan(&profile); err != nil {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO preferred_sync_slots VALUES(?,?,?,?,?,?,?,1)", id, pos, created.NodeID, created.EndpointID, created.BindingID, slotRevision(n), profile); err != nil {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO node_group_members VALUES(?,?,?)", j.GroupID, created.NodeID, pos); err != nil {
-				return err
-			}
-			used[addressKey(a)] = true
-			pos++
-		}
-		if pos < desired {
-			return fmt.Errorf("可用新候选不足，无法安全扩容到 %d", desired)
-		}
-		snapshots = states
 	}
 	config.Confirmed = false
 	if _, e = tx.ExecContext(ctx, "UPDATE preferred_sync_jobs SET config_json=?,state_json=?,revision=revision+1,next_run=?,status='pending' WHERE id=?", encode(config), encode(snapshots), time.Now().Unix(), id); e != nil {
