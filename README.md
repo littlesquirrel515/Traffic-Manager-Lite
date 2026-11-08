@@ -1,4 +1,4 @@
-# Traffic Manager Lite v2.5.4
+# Traffic Manager Lite v2.5.8
 
 远程优先的四核心流量监控、入站/连接入口与用户订阅管理。Go 单体、SQLite WAL、嵌入中文响应式 Web；默认无代理配置挂载、SSH、Docker Socket、Node.js 或 Redis。
 

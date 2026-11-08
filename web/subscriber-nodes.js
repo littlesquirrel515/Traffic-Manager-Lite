@@ -97,6 +97,5 @@ actions['subscriber-node-details']=async b=>{const rows=await api('catalog/subsc
 const subscriberPermissionsBase=views.subscribers;
 views.subscribers=async()=>{const [base,edits]=await Promise.all([subscriberPermissionsBase(),api('catalog/subscriber-node-edits')]);return base+`<section class="card panel spacer"><h2>节点权限变更</h2>${table(['用户','状态','说明','操作'],edits.map(e=>[esc(e.subscriber_name),esc(e.status),esc(e.message),e.status==='pending'?`<button data-action="subscriber-edit-retry" data-id="${esc(e.request_id)}">重试新增配置</button>`:'已保存']))}</section>`};
 actions['subscriber-edit-retry']=async b=>{const r=await api('catalog/subscriber-node-edits/'+b.dataset.id+'/retry','POST',{});await render();notice(r.message)};
-actions['subscriber-link']=async b=>{const r=await api('catalog/subscribers/'+b.dataset.id+'/link','POST',{});await showCatalogToken(r.token)};
-actions['catalog-link']=async b=>{const r=await api('catalog/subscriptions/'+b.dataset.id+'/link','POST',{});await showCatalogToken(r.token)};
-actions['catalog-rotate']=b=>edit('重置订阅链接',field('confirmed','确认重置：此订阅的旧链接将立即失效，客户端需要更新',false,'checkbox'),async d=>{if(!d.confirmed)throw Error('请确认重置影响');const r=await api('catalog/subscriptions/'+b.dataset.id+'/rotate-token','POST',{});setTimeout(()=>showCatalogToken(r.token),0)});
+actions['subscriber-link']=async b=>{const r=await api('catalog/subscribers/'+b.dataset.id+'/link','POST',{});await showCatalogToken(r.token,r.subscription_id)};
+actions['catalog-link']=async b=>{const r=await api('catalog/subscriptions/'+b.dataset.id+'/link','POST',{});await showCatalogToken(r.token,r.subscription_id)};

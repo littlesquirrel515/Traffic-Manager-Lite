@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,4 +103,95 @@ func TestRequestFormatNegotiation(t *testing.T) {
 			t.Fatal(d, got)
 		}
 	}
+}
+
+func TestUnifiedLinkLifecycleAndHistoricalDanglingOwnership(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := catalogFixture(t)
+	user, e := SaveSubscriber(ctx, s, Subscriber{Name: "Lifecycle", Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	key := filepath.Join(t.TempDir(), "key")
+	if e = os.WriteFile(key, []byte(strings.Repeat("k", 32)), 0600); e != nil {
+		t.Fatal(e)
+	}
+	first, e := UnifiedLink(ctx, s, key, user)
+	if e != nil || !first.Created {
+		t.Fatal(first, e)
+	}
+	if e = DeleteCatalogSubscription(ctx, s, first.SubscriptionID); !errors.Is(e, ErrUnifiedLinkManaged) {
+		t.Fatal("unified deletion accepted", e)
+	}
+	second, e := UnifiedLink(ctx, s, key, user)
+	if e != nil || second.Created || second.Token != first.Token {
+		t.Fatal("protected link changed", e)
+	}
+	// Old installations could leave this state when FK settings were lost.
+	if _, e = s.DB.Exec("PRAGMA foreign_keys=OFF"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DB.Exec("DELETE FROM catalog_subscriptions WHERE id=?", first.SubscriptionID); e != nil {
+		t.Fatal(e)
+	}
+	_, e = UnifiedLink(ctx, s, key, user)
+	if !errors.Is(e, ErrUnifiedLinkIncomplete) || strings.Contains(e.Error(), "sql:") {
+		t.Fatal("unhelpful or destructive orphan recovery", e)
+	}
+	var secrets, mapping int
+	s.DB.QueryRow("SELECT count(*) FROM subscription_link_secrets WHERE subscription_id=?", first.SubscriptionID).Scan(&secrets)
+	s.DB.QueryRow("SELECT count(*) FROM subscriber_unified_links WHERE subscription_id=?", first.SubscriptionID).Scan(&mapping)
+	if secrets != 1 || mapping != 1 {
+		t.Fatal("orphan evidence removed or silently rotated")
+	}
+	// A complete historical deletion leaves no mapping and can be created on demand.
+	s.DB.Exec("DELETE FROM subscription_link_secrets WHERE subscription_id=?", first.SubscriptionID)
+	s.DB.Exec("DELETE FROM subscriber_unified_links WHERE subscription_id=?", first.SubscriptionID)
+	s.DB.Exec("PRAGMA foreign_keys=ON")
+	recreated, e := UnifiedLink(ctx, s, key, user)
+	if e != nil || !recreated.Created || recreated.Token == first.Token {
+		t.Fatal(recreated, e)
+	}
+}
+
+func TestIndependentLinkDeletionRetainsLogsWithoutRelyingOnCascade(t *testing.T) {
+	ctx := context.Background()
+	s, n, creds := catalogFixture(t)
+	user, e := SaveSubscriber(ctx, s, Subscriber{Name: "Independent", Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = Bind(ctx, s, Binding{SubscriberID: user, InboundID: n.InboundID, CredentialID: creds[0], Enabled: true}); e != nil {
+		t.Fatal(e)
+	}
+	id, _, e := SaveCatalogSubscription(ctx, s, CatalogDefinition{Name: "Independent", SubscriberID: user, Format: "auto", NodeIDs: []string{n.ID}, Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	key := filepath.Join(t.TempDir(), "key")
+	os.WriteFile(key, []byte(strings.Repeat("x", 32)), 0600)
+	if _, e = VisibleLink(ctx, s, key, id); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DB.Exec("INSERT INTO subscription_access_logs(subscription_id,format,accessed_at,status_code,error_code,user_agent,client_ip_hash) VALUES(?,'mihomo','now',200,'','test','hash')", id); e != nil {
+		t.Fatal(e)
+	}
+	s.DB.Exec("PRAGMA foreign_keys=OFF")
+	if e = DeleteCatalogSubscription(ctx, s, id); e != nil {
+		t.Fatal(e)
+	}
+	for _, table := range []string{"catalog_subscription_nodes", "catalog_subscription_groups", "subscription_link_secrets"} {
+		var count int
+		s.DB.QueryRow("SELECT count(*) FROM "+table+" WHERE subscription_id=?", id).Scan(&count)
+		if count != 0 {
+			t.Fatal(table, count)
+		}
+	}
+	var logs, audit int
+	s.DB.QueryRow("SELECT count(*) FROM subscription_access_logs WHERE subscription_id IS NULL").Scan(&logs)
+	s.DB.QueryRow("SELECT count(*) FROM subscription_admin_audit WHERE subscription_id IS NULL").Scan(&audit)
+	if logs != 1 || audit != 1 {
+		t.Fatal("history removed", logs, audit)
+	}
+	s.DB.Exec("PRAGMA foreign_keys=ON")
 }

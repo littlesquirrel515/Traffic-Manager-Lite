@@ -94,3 +94,69 @@ func TestUnifiedLinkAdminRetrievalNegotiationAndRevocation(t *testing.T) {
 		}
 	}
 }
+
+func TestUnifiedSubscriptionDeletionAndResetRequireCorrectIntent(t *testing.T) {
+	a, _ := testAPI(t)
+	key := filepath.Join(t.TempDir(), "key")
+	os.WriteFile(key, []byte(strings.Repeat("z", 32)), 0600)
+	a.Config.ManagedKeyFile = key
+	h := a.Handler()
+	uid, e := subscription.SaveSubscriber(context.Background(), a.Store, subscription.Subscriber{Name: "Protected", Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	read := func() subscription.AdminLink {
+		t.Helper()
+		r := call(t, h, "POST", "/api/v1/catalog/subscribers/"+uid+"/link", map[string]any{}, true)
+		var link subscription.AdminLink
+		if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &link) != nil {
+			t.Fatal(r.Code, r.Body.String())
+		}
+		return link
+	}
+	first := read()
+	if r := call(t, h, "DELETE", "/api/v1/catalog/subscriptions/"+first.SubscriptionID, nil, true); r.Code != 409 || !strings.Contains(r.Body.String(), "统一订阅") {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	if r := call(t, h, "POST", "/api/v1/catalog/subscriptions/"+first.SubscriptionID+"/rotate-token", map[string]any{}, true); r.Code != 409 {
+		t.Fatal(r.Code)
+	}
+	if again := read(); again.Token != first.Token {
+		t.Fatal("rejected actions changed link")
+	}
+	r := call(t, h, "POST", "/api/v1/catalog/subscriptions/"+first.SubscriptionID+"/rotate-token", map[string]any{"confirmed": true}, true)
+	if r.Code != 200 {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	if rotated := read(); rotated.Token == first.Token {
+		t.Fatal("explicit reset did not replace token")
+	}
+	// Historical dangling mappings produce a domain message, never raw SQL errors.
+	a.Store.DB.Exec("PRAGMA foreign_keys=OFF")
+	a.Store.DB.Exec("DELETE FROM catalog_subscriptions WHERE id=?", first.SubscriptionID)
+	r = call(t, h, "POST", "/api/v1/catalog/subscribers/"+uid+"/link", map[string]any{}, true)
+	if r.Code != 409 || strings.Contains(r.Body.String(), "sql:") {
+		t.Fatal(r.Code, r.Body.String())
+	}
+}
+
+func TestSubscriberPreviewRequiresAdminAndDoesNotCreateDelivery(t *testing.T) {
+	a, h := testAPI(t)
+	uid, e := subscription.SaveSubscriber(context.Background(), a.Store, subscription.Subscriber{Name: "Readonly preview", Enabled: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	path := "/api/v1/catalog/subscribers/" + uid + "/preview"
+	if r := call(t, h, "POST", path, map[string]any{}, false); r.Code != 401 {
+		t.Fatal(r.Code)
+	}
+	r := call(t, h, "POST", path, map[string]any{}, true)
+	if r.Code != 200 || r.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	var count int
+	a.Store.DB.QueryRow("SELECT count(*) FROM catalog_subscriptions").Scan(&count)
+	if count != 0 {
+		t.Fatal("preview created a token")
+	}
+}

@@ -23,7 +23,14 @@ func Open(path, timezone string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	// These connection-local settings must also apply after the pool reconnects.
+	// Neither pragma changes a rejected legacy database on disk.
+	uri := "file:" + (&url.URL{Path: filepath.ToSlash(absolute)}).EscapedPath() + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return nil, err
 	}

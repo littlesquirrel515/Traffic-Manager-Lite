@@ -4,12 +4,46 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 	"traffic-manager-lite/internal/catalog"
 	"traffic-manager-lite/internal/secretstore"
 	"traffic-manager-lite/internal/storage"
 )
+
+var ErrUnifiedLinkManaged = errors.New("统一订阅属于订阅用户，不能独立删除；停用请管理用户状态，更换地址请明确重置链接")
+var ErrUnifiedLinkIncomplete = errors.New("统一订阅记录不完整，请先修复关联记录；为保护现有订阅地址，系统未自动重置")
+
+// DeleteCatalogSubscription protects subscriber-owned unified resources and
+// atomically removes independent deliveries, retaining their audit records.
+func DeleteCatalogSubscription(ctx context.Context, s *storage.Store, id string) error {
+	tx, e := s.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	var managed int
+	if e = tx.QueryRowContext(ctx, "SELECT count(*) FROM subscriber_unified_links WHERE subscription_id=?", id).Scan(&managed); e != nil {
+		return e
+	}
+	if managed > 0 {
+		return ErrUnifiedLinkManaged
+	}
+	for _, q := range []string{
+		"UPDATE subscription_access_logs SET subscription_id=NULL WHERE subscription_id=?",
+		"UPDATE subscription_admin_audit SET subscription_id=NULL WHERE subscription_id=?",
+		"DELETE FROM catalog_subscription_nodes WHERE subscription_id=?",
+		"DELETE FROM catalog_subscription_groups WHERE subscription_id=?",
+		"DELETE FROM subscription_link_secrets WHERE subscription_id=?",
+		"DELETE FROM catalog_subscriptions WHERE id=?",
+	} {
+		if _, e = tx.ExecContext(ctx, q, id); e != nil {
+			return e
+		}
+	}
+	return tx.Commit()
+}
 
 type linkSecret struct {
 	SubscriptionID string `json:"subscription_id"`
@@ -100,8 +134,10 @@ func UnifiedLink(ctx context.Context, s *storage.Store, keyfile, subscriber stri
 		return AdminLink{}, e
 	}
 	var id string
+	created := false
 	e = tx.QueryRowContext(ctx, "SELECT subscription_id FROM subscriber_unified_links WHERE subscriber_id=?", subscriber).Scan(&id)
 	if e == sql.ErrNoRows {
+		created = true
 		id = catalog.ID()
 		token, hash, err := Token()
 		if err != nil {
@@ -120,10 +156,21 @@ func UnifiedLink(ctx context.Context, s *storage.Store, keyfile, subscriber stri
 	} else if e != nil {
 		return AdminLink{}, e
 	}
+	// Detect historical dangling ownership before touching encrypted secrets.
+	var owner string
+	if err := tx.QueryRowContext(ctx, "SELECT subscriber_id FROM catalog_subscriptions WHERE id=?", id).Scan(&owner); err == sql.ErrNoRows {
+		return AdminLink{}, ErrUnifiedLinkIncomplete
+	} else if err != nil {
+		return AdminLink{}, err
+	}
+	if owner != subscriber {
+		return AdminLink{}, ErrUnifiedLinkIncomplete
+	}
 	r, e := visibleLink(ctx, tx, key, id)
 	if e != nil {
 		return r, e
 	}
+	r.Created = created
 	return r, tx.Commit()
 }
 

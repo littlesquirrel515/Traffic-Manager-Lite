@@ -12,7 +12,7 @@ import (
 )
 
 func catalogResult(w http.ResponseWriter, v any, e error) {
-	if errors.Is(e, catalog.ErrReferenced) {
+	if errors.Is(e, catalog.ErrReferenced) || errors.Is(e, subscription.ErrUnifiedLinkManaged) || errors.Is(e, subscription.ErrUnifiedLinkIncomplete) {
 		respond(w, 409, map[string]string{"error": e.Error()})
 		return
 	}
@@ -90,12 +90,15 @@ func (a *API) catalogRoutes(admin *http.ServeMux) {
 		result(w, nil, e)
 	})
 	admin.HandleFunc("GET /api/v1/catalog/endpoints", func(w http.ResponseWriter, r *http.Request) {
-		rows, e := a.Store.Rows(r.Context(), `SELECT e.*,(SELECT count(*) FROM node_profiles WHERE endpoint_id=e.id) AS references_count FROM node_endpoints e ORDER BY sort_order,name,id`)
+		rows, e := a.Store.Rows(r.Context(), `SELECT e.*,j.id AS sync_job_id,j.group_id AS sync_group_id,j.name AS sync_name,j.enabled AS sync_enabled,sl.active AS sync_active,(SELECT count(*) FROM node_profiles WHERE endpoint_id=e.id) AS references_count FROM node_endpoints e LEFT JOIN preferred_sync_slots sl ON sl.endpoint_id=e.id LEFT JOIN preferred_sync_jobs j ON j.id=sl.job_id ORDER BY e.sort_order,e.name,e.id`)
 		out := []catalog.Endpoint{}
 		for _, v := range rows {
 			n := catalog.Endpoint{ID: v["id"].(string), Name: v["name"].(string), Enabled: v["enabled"].(int64) == 1, Sort: int(v["sort_order"].(int64)), References: int(v["references_count"].(int64))}
 			_ = a.Store.DB.QueryRowContext(r.Context(), `SELECT count(DISTINCT subscription_id) FROM (SELECT sn.subscription_id FROM catalog_subscription_nodes sn JOIN node_profiles n ON n.id=sn.node_id WHERE n.endpoint_id=? UNION SELECT sg.subscription_id FROM catalog_subscription_groups sg JOIN node_group_members gm ON gm.group_id=sg.group_id JOIN node_profiles n ON n.id=gm.node_id WHERE n.endpoint_id=?)`, n.ID, n.ID).Scan(&n.Subscriptions)
 			_ = json.Unmarshal([]byte(v["profile_json"].(string)), &n.Profile)
+			if id, ok := v["sync_job_id"].(string); ok {
+				n.Sync = &catalog.EndpointSyncOrigin{JobID: id, GroupID: v["sync_group_id"].(string), Name: v["sync_name"].(string), Active: v["sync_active"].(int64) == 1, Enabled: v["sync_enabled"].(int64) == 1}
+			}
 			n.Description = v["description"].(string)
 			n.Kind = v["endpoint_type"].(string)
 			_ = a.Store.DB.QueryRowContext(r.Context(), "SELECT count(*) FROM inbound_endpoint_bindings WHERE endpoint_id=?", n.ID).Scan(&n.Bindings)
@@ -279,6 +282,17 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 		result(w, p, e)
 	})
 	admin.HandleFunc("POST /api/v1/catalog/subscriptions/{id}/rotate-token", func(w http.ResponseWriter, r *http.Request) {
+		var d struct {
+			Confirmed bool `json:"confirmed"`
+		}
+		if !body(w, r, &d) {
+			return
+		}
+		if !d.Confirmed {
+			respond(w, 409, map[string]string{"error": "请明确确认重置；旧订阅地址将立即失效"})
+			return
+		}
+
 		if a.Config.ManagedKeyFile != "" {
 			v, e := subscription.RotateVisibleLink(r.Context(), a.Store, a.Config.ManagedKeyFile, r.PathValue("id"))
 			result(w, v, e)
@@ -292,14 +306,19 @@ func (a *API) catalogSubscriptionRoutes(admin *http.ServeMux) {
 		w.Header().Set("Cache-Control", "private, no-store")
 		result(w, v, e)
 	})
+	admin.HandleFunc("POST /api/v1/catalog/subscribers/{id}/preview", func(w http.ResponseWriter, r *http.Request) {
+		v, e := subscription.SubscriberPreview(r.Context(), a.Store, r.PathValue("id"))
+		w.Header().Set("Cache-Control", "private, no-store")
+		catalogResult(w, v, e)
+	})
 	admin.HandleFunc("POST /api/v1/catalog/subscribers/{id}/link", func(w http.ResponseWriter, r *http.Request) {
 		v, e := subscription.UnifiedLink(r.Context(), a.Store, a.Config.ManagedKeyFile, r.PathValue("id"))
 		w.Header().Set("Cache-Control", "private, no-store")
-		result(w, v, e)
+		catalogResult(w, v, e)
 	})
 	admin.HandleFunc("DELETE /api/v1/catalog/subscriptions/{id}", func(w http.ResponseWriter, r *http.Request) {
-		_, e := a.Store.DB.ExecContext(r.Context(), "DELETE FROM catalog_subscriptions WHERE id=?", r.PathValue("id"))
-		result(w, map[string]bool{"deleted": e == nil}, e)
+		e := subscription.DeleteCatalogSubscription(r.Context(), a.Store, r.PathValue("id"))
+		catalogResult(w, map[string]bool{"deleted": e == nil}, e)
 	})
 	admin.HandleFunc("GET /api/v1/catalog/access-logs", func(w http.ResponseWriter, r *http.Request) {
 		a.rows(w, r, "SELECT * FROM subscription_access_logs ORDER BY id DESC LIMIT 200")

@@ -42,18 +42,27 @@ type Override struct {
 	Mode  string `json:"mode"`
 	Value any    `json:"value,omitempty"`
 }
+type EndpointSyncOrigin struct {
+	JobID   string `json:"job_id"`
+	GroupID string `json:"group_id"`
+	Name    string `json:"name"`
+	Active  bool   `json:"active"`
+	Enabled bool   `json:"enabled"`
+}
+
 type Endpoint struct {
-	Bindings      int            `json:"binding_count"`
-	Description   string         `json:"description"`
-	Kind          string         `json:"endpoint_type"`
-	Subscriptions int            `json:"subscriptions"`
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Profile       map[string]any `json:"profile"`
-	Enabled       bool           `json:"enabled"`
-	Sort          int            `json:"sort_order"`
-	References    int            `json:"references"`
-	ConfirmShared bool           `json:"confirm_shared"`
+	Sync          *EndpointSyncOrigin `json:"sync,omitempty"`
+	Bindings      int                 `json:"binding_count"`
+	Description   string              `json:"description"`
+	Kind          string              `json:"endpoint_type"`
+	Subscriptions int                 `json:"subscriptions"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Profile       map[string]any      `json:"profile"`
+	Enabled       bool                `json:"enabled"`
+	Sort          int                 `json:"sort_order"`
+	References    int                 `json:"references"`
+	ConfirmShared bool                `json:"confirm_shared"`
 }
 type Node struct {
 	BindingID   *string             `json:"binding_id"`
