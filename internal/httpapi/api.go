@@ -78,8 +78,24 @@ func (a *API) Handler() http.Handler {
 	})
 	admin.HandleFunc("GET /api/v1/traffic/summary", a.traffic)
 	admin.HandleFunc("GET /api/v1/traffic/history", a.traffic)
+	admin.HandleFunc("GET /api/v1/traffic/timeline", func(w http.ResponseWriter, r *http.Request) {
+		filter, err := a.filter(r)
+		if err != nil {
+			result(w, nil, err)
+			return
+		}
+		q := r.URL.Query()
+		timeline, err := a.Store.TrafficTimeline(r.Context(), storage.HistoryFilter{
+			From: filter.From, To: filter.To, UserID: filter.UserID,
+			InstanceID: filter.InstanceID, ServerID: filter.ServerID,
+			Grain: q.Get("grain"), Subscriber: q.Get("subscriber_id"), Core: q.Get("core"),
+		}, time.Now())
+		result(w, timeline, err)
+	})
+
 	admin.HandleFunc("GET /api/v1/users", func(w http.ResponseWriter, r *http.Request) {
-		a.rows(w, r, "SELECT u.*, (SELECT MAX(last_active_at) FROM identities WHERE user_id=u.id) last_active_at,(SELECT json_group_array(json_object('instance_id',i.instance_id,'inbound',i.inbound_tag,'state',COALESCE(p.capability_status,st.stats_state),'checked_at',COALESCE(p.collected_at,st.checked_at),'provider',p.provider_type,'coverage',p.coverage)) FROM identities i JOIN (SELECT instance_id,email,stats_state,checked_at FROM xray_user_states UNION ALL SELECT instance_id,email,stats_state,checked_at FROM core_user_states) st ON st.instance_id=i.instance_id AND st.email=i.core_user_key LEFT JOIN traffic_provenance p ON p.identity_id=i.id WHERE i.user_id=u.id AND i.scope='user') stats_states FROM users u WHERE display_name LIKE ? ORDER BY display_name", "%"+r.URL.Query().Get("search")+"%")
+		v, e := a.Store.TrafficUsers(r.Context(), r.URL.Query().Get("search"))
+		result(w, v, e)
 	})
 	admin.HandleFunc("GET /api/v1/identities", func(w http.ResponseWriter, r *http.Request) {
 		a.rows(w, r, "SELECT i.*,x.name instance_name FROM identities i JOIN instances x ON x.id=i.instance_id WHERE i.scope='user' ORDER BY i.id")

@@ -109,6 +109,24 @@ async function main(){
  await page.evaluate(id=>api('instances/'+id+'/collect','POST',{}),data.instance.id);counter=3;await page.evaluate(id=>api('instances/'+id+'/collect','POST',{}),data.instance.id);
  const facts=await page.evaluate(async id=>({clients:await api('catalog/inbounds/'+id+'/clients'),traffic:await api('traffic/summary?dimension=instance&scope=user&range=all')}),model.inbound);assert.equal(facts.clients.length,1);assert.ok(facts.traffic.some(v=>v.upload===6000&&v.download===3000));
  await page.evaluate(id=>{inboundDetailID=id},model.inbound);
+ // Traffic uses saved subscriber ownership while keeping technical identities and counters.
+ const trafficNames=await page.evaluate(()=>api('users'));const namedTraffic=trafficNames.find(u=>u.name_source==='subscriber'&&u.subscriber_owners.length);assert.ok(namedTraffic,'fixture subscriber not associated with traffic');
+ await page.goto(base+'/#traffic');await page.locator('#traffic-table tbody tr').first().waitFor();await page.locator('#search').fill(namedTraffic.subscriber_owners[0].name);await page.evaluate(()=>filterTraffic());assert.ok((await page.locator('#traffic-table').innerText()).includes(namedTraffic.operator_name));await page.locator('.traffic-identity-details summary').first().click();assert.ok((await page.locator('#traffic-table').innerText()).includes(namedTraffic.identity_refs[0].core_user_key));
+ await page.locator('[data-action=rename-user][data-id="'+namedTraffic.id+'"]').click();await page.waitForFunction(()=>document.querySelector('#editor').open);assert.equal(await page.locator('#fields [name=display_name]').inputValue(),namedTraffic.display_name);await page.locator('#cancel-dialog').click();
+ await page.evaluate(()=>render());await page.locator('#search').fill(namedTraffic.subscriber_owners[0].name);await page.evaluate(()=>filterTraffic());await page.locator('.traffic-identity-details summary').first().click();
+ for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'traffic ownership overflow '+width);await page.locator('#traffic-table tbody tr').first().screenshot({path:path.join(output,'traffic-user-names-'+width+'.png')});if(width===360)await page.screenshot({path:path.join(output,'traffic-user-names-mobile-page.png')})}
+ await page.locator('#search').fill('');await page.evaluate(()=>filterTraffic());
+ // Dashboard drill-down carries its date range and granularity into the chart.
+ await page.goto(base+'/#dashboard');
+ await page.getByRole('link',{name:'今日明细 →',exact:true}).click();
+ await page.locator('#traffic-history-result svg').waitFor();
+ assert.equal(await page.locator('#traffic-history-form [name=grain]').inputValue(),'hour');
+ assert.equal(await page.locator('#traffic-history-result tbody tr').count(),24);
+ await page.locator('#traffic-history-form [name=subject]').selectOption('subscriber:'+model.subscriber);
+ await page.locator('#traffic-history-form [name=grain]').selectOption('half-hour');
+ await page.getByRole('button',{name:'查询历史',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelectorAll('#traffic-history-result tbody tr').length===48);
+ assert.ok((await page.locator('#traffic-history-result').innerText()).includes('专用计量来源'));
  const targets=['dashboard','instances','traffic','online','settings','diagnostics','hosts','nodegroups','subscribers','subscriptionlogs','subsettings','inbounds','inbounddetail','capabilities','logs','servers','quota','collectionstatus'];let checks=0;
  for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});for(const target of targets){await page.evaluate(t=>{location.hash=t},target);await page.waitForFunction(()=>!document.querySelector('#content').textContent.includes('正在加载'));await page.waitForTimeout(150);assert.equal(await page.locator('#content').getByText('数据加载失败',{exact:true}).count(),0,target);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${target}: overflow ${width}`);checks++}await page.evaluate(()=>{location.hash='inbounds'});await page.waitForTimeout(250);await page.screenshot({path:path.join(output,'remote-fixture-'+width+'.png'),fullPage:true})}
  // One stable administrator-visible link follows current rights and negotiates
