@@ -31,6 +31,7 @@ type API struct {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	admin := http.NewServeMux()
+	a.systemInfoRoutes(admin)
 	a.catalogRoutes(admin)
 	a.preferredSyncRoutes(admin)
 	a.remoteRoutes(admin)

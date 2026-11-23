@@ -10,6 +10,8 @@ import (
 )
 
 type Config struct {
+	SystemHostNetworkDir, SystemHostOSFile                                              string
+	SystemPublicIPs                                                                     []string
 	ManagedKeyFile                                                                      string
 	CoreAgentURL, CoreAgentToken                                                        string
 	Listen, DBPath, BackupDir, AdminUser, AdminPassword, Timezone, LogLevel, ConfigRoot string
@@ -30,6 +32,19 @@ func Load() (Config, error) {
 	managedKeyFile := value("MANAGED_KEY_FILE", "")
 	c := Config{CoreAgentURL: value("CORE_AGENT_URL", ""), CoreAgentToken: value("CORE_AGENT_TOKEN", ""), Listen: value("LISTEN", ":8080"), DBPath: value("DB_PATH", "data/traffic.db"), BackupDir: value("BACKUP_DIR", "backups"), AdminUser: value("ADMIN_USER", "admin"), AdminPassword: value("ADMIN_PASSWORD", ""), Timezone: value("TIMEZONE", "Asia/Shanghai"), LogLevel: value("LOG_LEVEL", "info"), ConfigRoot: value("CONFIG_ROOT", "configs")}
 	c.ManagedKeyFile = managedKeyFile
+	c.SystemHostNetworkDir = value("SYSTEM_HOST_NETWORK_DIR", "")
+	c.SystemHostOSFile = value("SYSTEM_HOST_OS_FILE", "")
+	for _, raw := range strings.Split(value("SYSTEM_PUBLIC_IPS", ""), ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		ip, err := netip.ParseAddr(raw)
+		if err != nil || ip.Zone() != "" || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			return Config{}, fmt.Errorf("invalid TML_SYSTEM_PUBLIC_IPS")
+		}
+		c.SystemPublicIPs = append(c.SystemPublicIPs, ip.String())
+	}
 	for _, raw := range strings.Split(value("TRUSTED_PROXIES", ""), ",") {
 		if raw = strings.TrimSpace(raw); raw == "" {
 			continue

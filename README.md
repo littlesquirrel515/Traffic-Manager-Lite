@@ -1,6 +1,8 @@
-# Traffic Manager Lite v2.5.10
+# Traffic Manager Lite v2.6.0
 
 远程优先的四核心流量监控、入站/连接入口与用户订阅管理。Go 单体、SQLite WAL、嵌入中文响应式 Web；默认无代理配置挂载、SSH、Docker Socket、Node.js 或 Redis。
+
+v2.6.0 新增“系统 → 系统信息”：系统 CPU/内存/Swap/磁盘/IP、容器资源限额与 TML 进程用量。独立可复用 Go 采集模块，按需五秒缓存，无数据库迁移；[指标口径及可选宿主信息挂载](docs/system-information-v2.6.md)。
 
 **v2.2 是现有 v2 数据库的增量更新，保留已有用户、流量和订阅 Token，不需要清库。** 新增按节点/节点组创建订阅用户的流程，详见 [v2.1 节点授权与配置](docs/subscriber-node-workflow-v2.1.md)。v1/外部数据库仍拒绝直接接入；2026-10-15 的 v2 清库授权不适用于本次升级。
 

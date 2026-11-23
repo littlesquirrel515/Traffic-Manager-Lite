@@ -127,7 +127,13 @@ async function main(){
  await page.getByRole('button',{name:'查询历史',exact:true}).click();
  await page.waitForFunction(()=>document.querySelectorAll('#traffic-history-result tbody tr').length===48);
  assert.ok((await page.locator('#traffic-history-result').innerText()).includes('专用计量来源'));
- const targets=['dashboard','instances','traffic','online','settings','diagnostics','hosts','nodegroups','subscribers','subscriptionlogs','subsettings','inbounds','inbounddetail','capabilities','logs','servers','quota','collectionstatus'];let checks=0;
+ await page.goto(base+'/#systeminfo');await page.getByRole('heading',{name:'TML 当前进程',exact:true}).waitFor();
+ let systemRequests=0;const countSystemRequest=request=>{if(request.url().endsWith('/api/v1/system/info'))systemRequests++};page.on('request',countSystemRequest);
+ await page.waitForTimeout(5500);assert.ok(systemRequests>=1,'system metrics did not auto-refresh');
+ await page.locator('#system-info-auto').uncheck();const pausedRequests=systemRequests;await page.waitForTimeout(5500);assert.equal(systemRequests,pausedRequests,'disabled refresh kept polling');
+ for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'system info overflow '+width);await page.screenshot({path:path.join(output,'system-info-'+width+'.png'),fullPage:true})}
+ await page.goto(base+'/#dashboard');await page.waitForTimeout(5500);assert.equal(systemRequests,pausedRequests,'metrics polled outside own page');page.off('request',countSystemRequest);
+ const targets=['dashboard','instances','traffic','online','settings','systeminfo','diagnostics','hosts','nodegroups','subscribers','subscriptionlogs','subsettings','inbounds','inbounddetail','capabilities','logs','servers','quota','collectionstatus'];let checks=0;
  for(const width of [360,768,1440]){await page.setViewportSize({width,height:1000});for(const target of targets){await page.evaluate(t=>{location.hash=t},target);await page.waitForFunction(()=>!document.querySelector('#content').textContent.includes('正在加载'));await page.waitForTimeout(150);assert.equal(await page.locator('#content').getByText('数据加载失败',{exact:true}).count(),0,target);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${target}: overflow ${width}`);checks++}await page.evaluate(()=>{location.hash='inbounds'});await page.waitForTimeout(250);await page.screenshot({path:path.join(output,'remote-fixture-'+width+'.png'),fullPage:true})}
  // One stable administrator-visible link follows current rights and negotiates
  // The primary per-user preview remains usable before any unified URL is issued.

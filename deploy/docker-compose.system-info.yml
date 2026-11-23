@@ -1,0 +1,11 @@
+# Optional Linux host metadata. No host PID/network namespace or Docker socket.
+# docker compose -f docker-compose.yml -f traffic-manager-lite/deploy/docker-compose.system-info.yml up -d traffic-manager-lite
+services:
+  traffic-manager-lite:
+    environment:
+      TML_SYSTEM_HOST_NETWORK_DIR: /host/net
+      TML_SYSTEM_HOST_OS_FILE: /host/os-release
+    volumes:
+      - /proc/1/net/fib_trie:/host/net/fib_trie:ro
+      - /proc/1/net/if_inet6:/host/net/if_inet6:ro
+      - /etc/os-release:/host/os-release:ro
