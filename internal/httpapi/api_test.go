@@ -24,6 +24,7 @@ func testAPI(t *testing.T) (*API, http.Handler) {
 	}
 	t.Cleanup(func() { s.Close() })
 	cfg := config.Config{Interval: 10 * time.Second, Timeout: time.Second, ActiveWindow: 60 * time.Second, Timezone: "Asia/Shanghai", BackupDir: t.TempDir(), AdminUser: "admin", AdminPassword: "fixture-password-1234"}
+	cfg.SystemDisableOnlineIP = true
 	auth, e := security.NewAuth(cfg.AdminUser, cfg.AdminPassword, false)
 	if e != nil {
 		t.Fatal(e)

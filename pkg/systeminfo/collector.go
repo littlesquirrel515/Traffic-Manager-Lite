@@ -36,6 +36,7 @@ type counters struct {
 	process  *float64
 	group    *float64
 	throttle *uint64
+	io       ioCounters
 }
 
 func New(options Options) *Collector {
@@ -183,6 +184,8 @@ func (c *Collector) Snapshot(ctx context.Context) Snapshot {
 		out.Files = append(out.Files, entry)
 	}
 	applyRates(&out, c.prior, current)
+	current.io = collectIO(ctx, &out, c.prior.io)
+	out.Pressure = systemPressure()
 	out.DurationMS = time.Since(start).Milliseconds()
 	c.prior, c.cached = current, out
 	return out
@@ -216,6 +219,7 @@ func collectProcess(ctx context.Context, out *Snapshot, current *counters) {
 	if fds, err := p.NumFDsWithContext(ctx); err == nil {
 		out.Process.FileDescriptors = &fds
 	}
+	out.Process.FileDescriptorLimit = fileDescriptorLimit()
 	if io, err := p.IOCountersWithContext(ctx); err == nil {
 		out.Process.ReadBytes, out.Process.WriteBytes = &io.ReadBytes, &io.WriteBytes
 	}
@@ -252,9 +256,14 @@ func applyRates(out *Snapshot, previous, current counters) {
 		delta := total(current.host) - total(previous.host)
 		idle := current.host.Idle - previous.host.Idle
 		wait := current.host.Iowait - previous.host.Iowait
-		if delta > 0 && idle >= 0 && wait >= 0 && idle+wait <= delta {
-			busy, io := (delta-idle-wait)/delta*100, wait/delta*100
+		steal := current.host.Steal - previous.host.Steal
+		if delta > 0 && idle >= 0 && wait >= 0 && steal >= 0 && idle+wait+steal <= delta {
+			busy, io := (delta-idle-wait-steal)/delta*100, wait/delta*100
 			out.CPU.Percent, out.CPU.IOWaitPercent = &busy, &io
+			if runtime.GOOS == "linux" {
+				value := steal / delta * 100
+				out.CPU.StealPercent = &value
+			}
 		}
 	}
 	out.Process.CPUPercent = counterRate(previous.process, current.process, seconds)

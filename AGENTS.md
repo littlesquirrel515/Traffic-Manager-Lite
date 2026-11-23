@@ -1,3 +1,7 @@
+# 系统信息扩展
+
+系统信息页新增 PSI、CPU Steal、设备 I/O、网卡流量及进程文件描述符软限额。独立 `pkg/ipgeo` 优先使用配置和可见宿主公网地址，缺失时按用户要求仅使用固定 HTTPS 公网探测，无自定义 URL 或外部代理。探测异步、缓存成功结果，允许关闭；可选只读本地 MMDB 查询。此例外不改变 `pkg/systeminfo` 的纯本地采集边界。不作精确定位或授权判断。见 docs/system-information-v2.6.md。
+
 # v2.6.0 独立系统信息
 
 系统导航新增只读资源页；`pkg/systeminfo` 不依赖数据库、核心或业务模块，五秒共享缓存、相邻 CPU 计数器差值，缺失指标为空。区分内核可见系统资源、cgroup v1/v2 限额及 TML RSS/Go 运行时。宿主地址/发行版仅可选三个文件只读挂载，公网 NAT 地址由管理员声明；无 Docker Socket、宿主 PID/网络模式、任意命令或外部探测。无迁移，不改授权/计费/核心。见 docs/system-information-v2.6.md。

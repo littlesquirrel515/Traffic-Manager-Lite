@@ -23,21 +23,23 @@ type Issue struct {
 }
 
 type Snapshot struct {
-	ObservedAt time.Time `json:"observed_at"`
-	DurationMS int64     `json:"duration_ms"`
-	Window     float64   `json:"sample_seconds"`
-	System     System    `json:"system"`
-	CPU        CPU       `json:"cpu"`
-	Memory     *Memory   `json:"memory"`
-	Swap       *Swap     `json:"swap"`
-	Container  Container `json:"container"`
-	Process    Process   `json:"process"`
-	Disks      []Disk    `json:"disks"`
-	Files      []File    `json:"files"`
-	Interfaces []NIC     `json:"interfaces"`
-	HostIPs    []Address `json:"host_ips"`
-	PublicIPs  []string  `json:"declared_public_ips"`
-	Issues     []Issue   `json:"issues"`
+	ObservedAt time.Time  `json:"observed_at"`
+	DurationMS int64      `json:"duration_ms"`
+	Window     float64    `json:"sample_seconds"`
+	System     System     `json:"system"`
+	CPU        CPU        `json:"cpu"`
+	Memory     *Memory    `json:"memory"`
+	Swap       *Swap      `json:"swap"`
+	Container  Container  `json:"container"`
+	Process    Process    `json:"process"`
+	Disks      []Disk     `json:"disks"`
+	Files      []File     `json:"files"`
+	Interfaces []NIC      `json:"interfaces"`
+	DiskIO     []DeviceIO `json:"disk_io"`
+	Pressure   *Pressure  `json:"pressure"`
+	HostIPs    []Address  `json:"host_ips"`
+	PublicIPs  []string   `json:"declared_public_ips"`
+	Issues     []Issue    `json:"issues"`
 }
 
 type System struct {
@@ -59,6 +61,7 @@ type CPU struct {
 	MHz           float64  `json:"mhz"`
 	Percent       *float64 `json:"percent"`
 	IOWaitPercent *float64 `json:"iowait_percent"`
+	StealPercent  *float64 `json:"steal_percent"`
 	Load1         *float64 `json:"load1"`
 	Load5         *float64 `json:"load5"`
 	Load15        *float64 `json:"load15"`
@@ -106,22 +109,23 @@ type Container struct {
 }
 
 type Process struct {
-	PID                int32    `json:"pid"`
-	RSS                *uint64  `json:"rss"`
-	VirtualMemory      *uint64  `json:"virtual_memory"`
-	CPUPercent         *float64 `json:"cpu_single_core_percent"`
-	CPUCapacityPercent *float64 `json:"cpu_capacity_percent"`
-	Uptime             *uint64  `json:"uptime_seconds"`
-	Threads            *int32   `json:"threads"`
-	FileDescriptors    *int32   `json:"file_descriptors"`
-	ReadBytes          *uint64  `json:"read_bytes"`
-	WriteBytes         *uint64  `json:"write_bytes"`
-	GoVersion          string   `json:"go_version"`
-	Goroutines         uint64   `json:"goroutines"`
-	GoHeap             uint64   `json:"go_heap"`
-	GoRuntimeMemory    uint64   `json:"go_runtime_memory"`
-	GCCycles           uint64   `json:"gc_cycles"`
-	GOMAXPROCS         int      `json:"gomaxprocs"`
+	PID                 int32    `json:"pid"`
+	RSS                 *uint64  `json:"rss"`
+	VirtualMemory       *uint64  `json:"virtual_memory"`
+	CPUPercent          *float64 `json:"cpu_single_core_percent"`
+	CPUCapacityPercent  *float64 `json:"cpu_capacity_percent"`
+	Uptime              *uint64  `json:"uptime_seconds"`
+	Threads             *int32   `json:"threads"`
+	FileDescriptors     *int32   `json:"file_descriptors"`
+	FileDescriptorLimit *uint64  `json:"file_descriptor_limit"`
+	ReadBytes           *uint64  `json:"read_bytes"`
+	WriteBytes          *uint64  `json:"write_bytes"`
+	GoVersion           string   `json:"go_version"`
+	Goroutines          uint64   `json:"goroutines"`
+	GoHeap              uint64   `json:"go_heap"`
+	GoRuntimeMemory     uint64   `json:"go_runtime_memory"`
+	GCCycles            uint64   `json:"gc_cycles"`
+	GOMAXPROCS          int      `json:"gomaxprocs"`
 }
 
 type Disk struct {
@@ -148,8 +152,34 @@ type Address struct {
 }
 
 type NIC struct {
-	Name      string    `json:"name"`
-	MTU       int       `json:"mtu"`
-	Up        bool      `json:"up"`
-	Addresses []Address `json:"addresses"`
+	Name      string     `json:"name"`
+	MTU       int        `json:"mtu"`
+	Up        bool       `json:"up"`
+	Addresses []Address  `json:"addresses"`
+	IO        *NetworkIO `json:"io"`
+}
+
+type NetworkIO struct {
+	Received      uint64   `json:"received_bytes"`
+	Sent          uint64   `json:"sent_bytes"`
+	ReceiveRate   *float64 `json:"receive_bytes_per_second"`
+	SendRate      *float64 `json:"send_bytes_per_second"`
+	ReceiveErrors uint64   `json:"receive_errors"`
+	SendErrors    uint64   `json:"send_errors"`
+	ReceiveDrops  uint64   `json:"receive_drops"`
+	SendDrops     uint64   `json:"send_drops"`
+}
+
+type DeviceIO struct {
+	Name      string   `json:"name"`
+	ReadRate  *float64 `json:"read_bytes_per_second"`
+	WriteRate *float64 `json:"write_bytes_per_second"`
+	ReadIOPS  *float64 `json:"read_iops"`
+	WriteIOPS *float64 `json:"write_iops"`
+}
+
+type Pressure struct {
+	CPU    *float64 `json:"cpu_some_avg10"`
+	Memory *float64 `json:"memory_some_avg10"`
+	IO     *float64 `json:"io_some_avg10"`
 }

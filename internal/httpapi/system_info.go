@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"traffic-manager-lite/internal/config"
+	"traffic-manager-lite/pkg/ipgeo"
 	"traffic-manager-lite/pkg/systeminfo"
 )
 
@@ -26,7 +28,26 @@ func systemInfoCollector(c config.Config) *systeminfo.Collector {
 
 func (a *API) systemInfoRoutes(admin *http.ServeMux) {
 	collector := systemInfoCollector(a.Config)
+	options := ipgeo.Options{DisableOnline: a.Config.SystemDisableOnlineIP, DatabasePath: a.Config.SystemGeoIPDatabase}
+	for _, raw := range a.Config.SystemPublicIPs {
+		if ip, err := netip.ParseAddr(raw); err == nil {
+			options.Declared = append(options.Declared, ip)
+		}
+	}
+	resolver := ipgeo.New(options)
 	admin.HandleFunc("GET /api/v1/system/info", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, http.StatusOK, collector.Snapshot(r.Context()))
+		snapshot := collector.Snapshot(r.Context())
+		var local []netip.Addr
+		for _, address := range snapshot.HostIPs {
+			if address.Scope == "global" {
+				if ip, err := netip.ParseAddr(address.IP); err == nil {
+					local = append(local, ip)
+				}
+			}
+		}
+		respond(w, http.StatusOK, struct {
+			systeminfo.Snapshot
+			PublicNetwork ipgeo.Snapshot `json:"public_network"`
+		}{snapshot, resolver.Current(local)})
 	})
 }

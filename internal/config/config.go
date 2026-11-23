@@ -12,6 +12,8 @@ import (
 type Config struct {
 	SystemHostNetworkDir, SystemHostOSFile                                              string
 	SystemPublicIPs                                                                     []string
+	SystemDisableOnlineIP                                                               bool
+	SystemGeoIPDatabase                                                                 string
 	ManagedKeyFile                                                                      string
 	CoreAgentURL, CoreAgentToken                                                        string
 	Listen, DBPath, BackupDir, AdminUser, AdminPassword, Timezone, LogLevel, ConfigRoot string
@@ -34,6 +36,7 @@ func Load() (Config, error) {
 	c.ManagedKeyFile = managedKeyFile
 	c.SystemHostNetworkDir = value("SYSTEM_HOST_NETWORK_DIR", "")
 	c.SystemHostOSFile = value("SYSTEM_HOST_OS_FILE", "")
+	c.SystemGeoIPDatabase = value("SYSTEM_GEOIP_DB", "")
 	for _, raw := range strings.Split(value("SYSTEM_PUBLIC_IPS", ""), ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -69,6 +72,10 @@ func Load() (Config, error) {
 		}
 	}
 	var err error
+	c.SystemDisableOnlineIP, err = strconv.ParseBool(value("SYSTEM_DISABLE_ONLINE_IP", "false"))
+	if err != nil {
+		return c, fmt.Errorf("invalid TML_SYSTEM_DISABLE_ONLINE_IP")
+	}
 	for k, p := range map[string]*time.Duration{"COLLECT_INTERVAL": &c.Interval, "COLLECT_TIMEOUT": &c.Timeout, "ACTIVE_WINDOW": &c.ActiveWindow} {
 		d := map[string]string{"COLLECT_INTERVAL": "10s", "COLLECT_TIMEOUT": "8s", "ACTIVE_WINDOW": "60s"}[k]
 		*p, err = time.ParseDuration(value(k, d))

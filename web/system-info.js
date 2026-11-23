@@ -6,6 +6,29 @@ let systemInfoAutomatic = true;
 const systemPercent = value => value == null ? '—' : value.toFixed(1) + '%';
 const systemBytes = value => value == null ? '—' : fmt(value);
 const systemNumber = value => value == null ? '—' : esc(value);
+const systemRate = value => value == null ? '—' : systemBytes(value) + '/s';
+
+function systemPublicNetwork(network) {
+  if (!network) return '<p class="muted">公网地址暂不可用</p>';
+  const sources = {configured:'管理员配置', local:'宿主机网卡', cloudflare:'Cloudflare 出口探测', ipify:'ipify 出口探测'};
+  const statuses = {loading:'正在查询公网地址…', unavailable:'未取得公网地址，稍后自动重试', disabled:'在线探测已关闭，未发现公网地址', stale:'最近一次探测失败，以下为上次成功结果'};
+  const geoSources = {cloudflare:'Cloudflare', mmdb:'本地 IP 数据库'};
+  const regions = new Intl.DisplayNames(['zh-CN'], {type:'region'});
+  const rows = network.addresses.map(address => {
+    const location = address.location;
+    const code = location.country_code;
+    const country = location.country || (/^[A-Z]{2}$/.test(code || '') ? regions.of(code) : '');
+    const geography = [...new Set([country, location.region, location.city].filter(Boolean))].join(' · ');
+    return [esc(address.ip), esc(sources[address.source]), esc(geography || '未知'), esc(geoSources[address.geo_source] || '—')];
+  });
+  return `
+    ${statuses[network.status] ? `<p class="muted">${statuses[network.status]}</p>` : ''}
+    ${rows.length ? table(['公网地址','地址来源','IP 归属地','地区来源'], rows) : ''}
+    ${network.checked_at ? `<p class="muted">查询时间 ${esc(date(network.checked_at))}</p>` : ''}
+    ${network.database_status === 'unavailable' ? '<p class="muted">本地 IP 库无法读取</p>' : ''}
+    ${network.addresses.some(address => address.geo_source === 'mmdb') ? '<p class="muted">本地数据源支持 <a href="https://db-ip.com/" target="_blank" rel="noopener noreferrer">DB-IP</a> 和 <a href="https://www.maxmind.com/" target="_blank" rel="noopener noreferrer">MaxMind GeoLite2</a>。</p>' : ''}
+  `;
+}
 
 function systemDuration(seconds) {
   if (seconds == null) return '—';
@@ -19,7 +42,7 @@ function systemMeter(percent, label) {
   if (percent == null) return '<p class="muted">等待采样或指标不可用</p>';
   const width = Math.max(0, Math.min(100, percent));
   const severity = percent >= 90 ? 'critical' : percent >= 75 ? 'warning' : 'normal';
-  return `<svg class="system-meter ${severity}" viewBox="0 0 100 5" role="img" aria-label="${esc(label)} ${systemPercent(percent)}"><rect class="system-meter-track" width="100" height="5" rx="2"/><rect class="system-meter-value" width="${width}" height="5" rx="2"/></svg>`;
+  return `<svg class="system-meter ${severity}" viewBox="0 0 100 5" preserveAspectRatio="none" role="img" aria-label="${esc(label)} ${systemPercent(percent)}"><rect class="system-meter-track" width="100" height="5" rx="2"/><rect class="system-meter-value" width="${width}" height="5" rx="2"/></svg>`;
 }
 
 function systemCard(title, value, description, percent) {
@@ -56,7 +79,7 @@ views.systeminfo = async function() {
     const platform = info.system;
     const limit = group.memory_limit_state === 'unlimited' ? '未设置有限额度' : systemBytes(group.memory_limit);
     const swap = info.swap;
-    const issues = {platform:'运行系统',cpu_info:'CPU 信息',cpu_usage:'CPU 使用率',load:'负载',memory:'内存',swap:'Swap',process:'进程资源',host_platform:'宿主发行版',host_network:'宿主网络',network:'网卡',network_addresses:'网卡地址'};
+    const issues = {platform:'运行系统',cpu_info:'CPU 信息',cpu_usage:'CPU 使用率',load:'负载',memory:'内存',swap:'Swap',process:'进程资源',host_platform:'宿主发行版',host_network:'宿主网络',network:'网卡',network_addresses:'网卡地址',disk_io:'磁盘 I/O',network_io:'网卡流量'};
     return `<div class="system-toolbar"><span class="muted">采样于 ${esc(date(info.observed_at))} · 耗时 ${info.duration_ms} ms${info.sample_seconds ? ' · 统计间隔 ' + info.sample_seconds.toFixed(1) + ' 秒' : ''}</span><label><input id="system-info-auto" type="checkbox" ${systemInfoAutomatic ? 'checked' : ''}> 每 5 秒刷新</label></div>
       ${alerts.length ? `<div class="system-alert" role="status">${[...new Set(alerts)].map(alert => `<p>${esc(alert)}</p>`).join('')}</div>` : ''}
       <div class="system-resource-grid">
@@ -71,8 +94,16 @@ views.systeminfo = async function() {
         ['内核 / 架构', esc(platform.kernel + ' / ' + platform.architecture)], ['系统运行时间', systemDuration(platform.kernel_uptime_seconds)],
         ['CPU 型号', esc(info.cpu.model || '不可用')], ['物理核 / 逻辑 CPU', `${info.cpu.physical || '—'} / ${info.cpu.logical || '—'}`],
         ['CPU 报告频率', info.cpu.mhz ? info.cpu.mhz.toFixed(0) + ' MHz' : '不可用'], ['CPU I/O 等待', systemPercent(info.cpu.iowait_percent)],
+        ['虚拟机 CPU 被占用时间（Steal）', systemPercent(info.cpu.steal_percent)],
         ['系统负载 1 / 5 / 15 分钟', [info.cpu.load1,info.cpu.load5,info.cpu.load15].map(value => value == null ? '—' : value.toFixed(2)).join(' / ')]
       ])}<p class="muted">系统 CPU、内存和负载来自当前可见的内核视图。内存使用量按总量减可用量计算。CPU 使用率需要两次有效采样。</p></section>
+      <section class="card panel spacer"><h2>资源等待压力</h2>
+        ${info.pressure ? systemDetails([
+          ['CPU', systemPercent(info.pressure.cpu_some_avg10)],
+          ['内存', systemPercent(info.pressure.memory_some_avg10)],
+          ['磁盘 I/O', systemPercent(info.pressure.io_some_avg10)]
+        ]) + '<p class="muted">Linux PSI 近 10 秒平均值，表示至少有一个任务因等待该资源而停滞的时间比例。</p>' : '<p class="muted">当前环境未提供 Linux PSI 指标。</p>'}
+      </section>
       <div class="grid-two spacer">
         <section class="card panel"><h2>容器 / 进程资源组</h2><p class="muted">${group.status === 'available' ? 'cgroup v' + group.version : group.status === 'not_applicable' ? '当前没有可读取的独立资源组' : '当前环境无法读取资源组指标'}</p>${systemDetails([
           ['CPU 配额', group.cpu_quota_cores == null ? '未读取到有限配额' : group.cpu_quota_cores.toFixed(2) + ' 核'],
@@ -87,7 +118,8 @@ views.systeminfo = async function() {
           ['CPU 使用率（单核 100%）', systemPercent(process.cpu_single_core_percent)], ['CPU 占可见容量', systemPercent(process.cpu_capacity_percent)],
           ['驻留内存 RSS', systemBytes(process.rss)], ['虚拟地址空间', systemBytes(process.virtual_memory)],
           ['Go 堆对象内存', systemBytes(process.go_heap)], ['Go 管理内存（含预留）', systemBytes(process.go_runtime_memory)],
-          ['Goroutine / 系统线程', process.goroutines + ' / ' + systemNumber(process.threads)], ['打开的文件描述符', systemNumber(process.file_descriptors)],
+          ['文件描述符 已用 / 软限额', systemNumber(process.file_descriptors) + ' / ' + systemNumber(process.file_descriptor_limit)],
+          ['Goroutine / 系统线程', process.goroutines + ' / ' + systemNumber(process.threads)],
           ['GC 次数 / GOMAXPROCS', process.gc_cycles + ' / ' + process.gomaxprocs], ['进程累计物理读 / 写', systemBytes(process.read_bytes) + ' / ' + systemBytes(process.write_bytes)], ['Go 版本', esc(process.go_version)]
         ])}</section>
       </div>
@@ -95,10 +127,30 @@ views.systeminfo = async function() {
         `${esc({root:'运行根目录',data:'数据目录',backups:'备份目录'}[disk.name] || disk.name)}<small>${esc(disk.path)}</small>`, disk.status === 'available' ? systemBytes(disk.total) : '不可用', disk.status === 'available' ? systemBytes(disk.used) : '—', disk.status === 'available' ? systemBytes(disk.available) : '—', disk.status === 'available' ? systemPercent(disk.percent) : '—', disk.inodes_total ? disk.inodes_free + ' / ' + disk.inodes_total : '不适用'
       ]))}<h3>数据文件大小</h3>${table(['文件','逻辑长度'],info.files.map(file => [esc({database:'SQLite 数据库',wal:'SQLite WAL',shm:'SQLite 共享内存文件'}[file.name] || file.name), file.status === 'available' ? systemBytes(file.size) : file.status === 'absent' ? '尚未创建' : '不可读取']))}</section>
       <section class="card panel spacer"><h2>Swap</h2>${swap ? `<p>${swap.total ? '已使用 ' + systemBytes(swap.used) + ' / 总量 ' + systemBytes(swap.total) + ' · 可用 ' + systemBytes(swap.free) : '系统未配置 Swap'}</p>${swap.devices.length ? table(['设备 / 文件','已使用','可用'],swap.devices.map(device => [esc(device.name),systemBytes(device.used),systemBytes(device.free)])) : ''}` : '<p>当前环境无法读取 Swap 信息</p>'}</section>
+      <section class="card panel spacer"><h2>磁盘 I/O</h2>
+        <p class="muted">按可见设备显示。分区和整盘的统计有重叠，需分别查看。速率在第二次采样后显示。</p>
+        ${info.disk_io?.length ? table(['设备','读取速率','写入速率','读 IOPS','写 IOPS'], info.disk_io.map(device => [
+          esc(device.name), systemRate(device.read_bytes_per_second), systemRate(device.write_bytes_per_second),
+          systemNumber(device.read_iops?.toFixed(1)), systemNumber(device.write_iops?.toFixed(1))
+        ])) : '<p class="muted">当前环境没有可读的磁盘 I/O 指标。</p>'}
+      </section>
       <section class="card panel spacer"><h2>网络地址</h2>${systemDetails([
-        ['宿主机本地地址', info.host_ips.length ? info.host_ips.map(systemAddress).join('<br>') : platform.containerized ? '需启用宿主信息只读挂载' : '未取得地址'],
-        ['配置的公网地址', info.declared_public_ips.length ? info.declared_public_ips.map(esc).join('<br>') + '<small>来源为管理员配置</small>' : '未配置']
-      ])}<p class="muted">网卡列表来自${platform.network_scope === 'container' ? '容器网络命名空间' : '本机网络'}。NAT 后的公网地址需由管理员配置。</p>${table(['网卡','状态 / MTU','本地地址'],info.interfaces.map(network => [esc(network.name), (network.up ? '启用' : '关闭') + ' / ' + network.mtu, network.addresses.map(systemAddress).join('<br>') || '无地址']))}</section>
+        ['宿主机本地地址', info.host_ips.length ? info.host_ips.map(systemAddress).join('<br>') : platform.containerized ? '需启用宿主信息只读挂载' : '未取得地址']
+      ])}<p class="muted">网卡列表来自${platform.network_scope === 'container' ? '容器网络命名空间' : '本机网络'}。</p>${table(['网卡','状态 / MTU','本地地址'],info.interfaces.map(network => [esc(network.name), (network.up ? '启用' : '关闭') + ' / ' + network.mtu, network.addresses.map(systemAddress).join('<br>') || '无地址']))}
+        <h3>公网地址与归属地</h3>
+        <p class="muted">在线探测显示该服务看到的公网出口。IP 归属地为估计值。</p>
+        ${systemPublicNetwork(info.public_network)}
+      </section>
+      <section class="card panel spacer"><h2>网卡流量</h2>
+        <p class="muted">来自${platform.network_scope === 'container' ? '容器' : '本机'}网卡，累计值和 TML 订阅计费使用不同的统计口径。</p>
+        ${table(['网卡','接收 / 发送速率','累计接收 / 发送','接收 / 发送错误','接收 / 发送丢包'], info.interfaces.filter(network => network.io).map(network => [
+          esc(network.name),
+          systemRate(network.io.receive_bytes_per_second) + ' / ' + systemRate(network.io.send_bytes_per_second),
+          systemBytes(network.io.received_bytes) + ' / ' + systemBytes(network.io.sent_bytes),
+          systemNumber(network.io.receive_errors) + ' / ' + systemNumber(network.io.send_errors),
+          systemNumber(network.io.receive_drops) + ' / ' + systemNumber(network.io.send_drops)
+        ]))}
+      </section>
       ${info.issues.length ? `<p class="muted">部分指标不可用 · ${[...new Set(info.issues.map(issue => issues[issue.component] || issue.component))].map(esc).join('、')}</p>` : ''}`;
   } finally {
     systemInfoRefreshing = false;
